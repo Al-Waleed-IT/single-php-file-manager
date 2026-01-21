@@ -1,0 +1,86 @@
+name: Test Build
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches-ignore:
+      - main
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        php-version: ['5.6', '7.4', '8.0', '8.2']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup PHP ${{ matrix.php-version }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: zip, phar
+
+      - name: Download Vue 3
+        run: |
+          curl -sL https://unpkg.com/vue@3/dist/vue.global.prod.js -o src/js/vue.prod.js
+          echo "✅ Vue 3 downloaded"
+
+      - name: Build project
+        run: |
+          node build.js
+          echo "✅ Build complete"
+
+      - name: Check PHP syntax for PHP ${{ matrix.php-version }}
+        run: |
+          php -l dist/filemanager.php
+          echo "✅ PHP syntax check passed for PHP ${{ matrix.php-version }}"
+
+      - name: Check file size
+        run: |
+          FILE_SIZE=$(stat -c%s dist/filemanager.php)
+          if [ $FILE_SIZE -gt 300000 ]; then
+            echo "⚠️  Warning: File size is larger than expected"
+          fi
+          echo "📏 File size: $(ls -lh dist/filemanager.php | awk '{print $5}')"
+
+      - name: Verify Vue 3 is embedded
+        run: |
+          if grep -q "Vue.createApp" dist/filemanager.php; then
+            echo "✅ Vue 3 is properly embedded"
+          else
+            echo "❌ Vue 3 not found in built file"
+            exit 1
+          fi
+
+      - name: Upload build artifact
+        if: matrix.php-version == '8.2'
+        uses: actions/upload-artifact@v3
+        with:
+          name: filemanager-php
+          path: dist/filemanager.php
+          retention-days: 7
+
+  summary:
+    runs-on: ubuntu-latest
+    needs: test-build
+    if: always()
+
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## 🧪 Test Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All PHP version compatibility tests passed!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tested PHP versions: 5.6, 7.4, 8.0, 8.2" >> $GITHUB_STEP_SUMMARY

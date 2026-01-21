@@ -1,0 +1,28 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Source files
+*.php text
+*.js text
+*.css text
+*.html text
+*.md text
+*.json text
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Archives
+*.zip binary
+*.tar binary
+*.gz binary
+*.bz2 binary
+
+# Language detection
+src/js/vue.prod.js linguist-vendored
+dist/* linguist-generated

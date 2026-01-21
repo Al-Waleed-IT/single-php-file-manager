@@ -1,0 +1,174 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for versioning
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+
+      - name: Download Vue 3
+        run: |
+          curl -sL https://unpkg.com/vue@3/dist/vue.global.prod.js -o src/js/vue.prod.js
+          echo "✅ Vue 3 downloaded"
+
+      - name: Build project
+        run: |
+          node build.js
+          echo "✅ Build complete"
+
+      - name: Verify build
+        run: |
+          php -l dist/filemanager.php
+          ls -lh dist/filemanager.php
+
+      - name: Generate version
+        id: version
+        run: |
+          # Generate version based on date and commit count
+          VERSION="v1.$(date +'%Y.%m%d').$(git rev-list --count HEAD)"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Version: $VERSION"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -z "$LAST_TAG" ]; then
+            # First release - get all commits
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            # Get commits since last tag
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Prepare changelog
+          cat << EOF > RELEASE_NOTES.md
+          ## 🚀 What's New
+
+          ${COMMITS}
+
+          ## 📥 Installation
+
+          1. Download \`filemanager.php\` from the assets below
+          2. Upload to your server
+          3. Access via browser
+          4. Login with: \`admin\` / \`admin\`
+          5. **⚠️ Change password immediately!**
+
+          ## 📊 Build Info
+
+          - **Size**: $(ls -lh dist/filemanager.php | awk '{print $5}')
+          - **Build Date**: $(date +'%Y-%m-%d %H:%M:%S UTC')
+          - **Commit**: $(git rev-parse --short HEAD)
+
+          ## 🔧 Requirements
+
+          - PHP 5.6+
+          - PHP extensions: zip, phar (for archive operations)
+
+          ---
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${{ steps.version.outputs.version }}
+          EOF
+
+          echo "✅ Changelog generated"
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️  Tag already exists, skipping release"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✅ Tag is new"
+          fi
+
+      - name: Create Release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            dist/filemanager.php
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update CHANGELOG.md
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          # Get current changelog content (if exists)
+          if [ -f CHANGELOG.md ]; then
+            tail -n +2 CHANGELOG.md > CHANGELOG_OLD.md
+          else
+            touch CHANGELOG_OLD.md
+          fi
+
+          # Get release notes content (without the install section)
+          CHANGES=$(git log $(git describe --tags --abbrev=0 2>/dev/null || echo "")..HEAD --pretty=format:"- %s (%h)" --no-merges || echo "- Initial release")
+
+          # Create new changelog
+          cat << EOF > CHANGELOG.md
+          # Changelog
+
+          All notable changes to this project will be documented in this file.
+
+          ## [${{ steps.version.outputs.version }}] - $(date +'%Y-%m-%d')
+
+          ${CHANGES}
+
+          EOF
+
+          # Append old changelog
+          cat CHANGELOG_OLD.md >> CHANGELOG.md
+          rm -f CHANGELOG_OLD.md
+
+          echo "✅ CHANGELOG.md updated"
+
+      - name: Commit CHANGELOG.md
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add CHANGELOG.md
+          git diff --staged --quiet || git commit -m "docs: Update CHANGELOG for ${{ steps.version.outputs.version }} [skip ci]"
+          git push || echo "⚠️  No changes to push"
+
+      - name: Summary
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          echo "## 🎉 Release Created!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **File**: filemanager.php" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: $(ls -lh dist/filemanager.php | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release URL**: https://github.com/${{ github.repository }}/releases/tag/${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY

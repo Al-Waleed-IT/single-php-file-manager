@@ -1,0 +1,33 @@
+{
+  "name": "single-php-file-manager",
+  "version": "1.0.0",
+  "description": "Modular PHP File Manager that builds into a single 209KB file with Vue 3, authentication, and archive support",
+  "main": "build.js",
+  "scripts": {
+    "build": "node build.js",
+    "dev": "node build.js --watch",
+    "clean": "rm -rf dist/*",
+    "test": "php -l dist/filemanager.php",
+    "serve": "./start-dev.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Al-Waleed-IT/single-php-file-manager.git"
+  },
+  "keywords": [
+    "php",
+    "file-manager",
+    "vue3",
+    "single-file",
+    "file-upload",
+    "archive",
+    "authentication",
+    "bcrypt"
+  ],
+  "author": "Al-Waleed-IT",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Al-Waleed-IT/single-php-file-manager/issues"
+  },
+  "homepage": "https://github.com/Al-Waleed-IT/single-php-file-manager#readme"
+}

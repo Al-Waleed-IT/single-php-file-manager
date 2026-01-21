@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Manager</title>
+    <style>/* CSS_PLACEHOLDER */</style>
+</head>
+<body>
+    <div id="app">
+        <header>
+            <div class="container">
+                <div class="header-content">
+                    <div class="header-left">
+                        <h1>📁 File Manager</h1>
+                        <div class="user-info">👤 <?php echo htmlspecialchars($_SESSION['username']); ?></div>
+                    </div>
+                    <div class="btn-group">
+                        <button @click="showCreateModal('directory')" class="btn btn-blue">+ Folder</button>
+                        <button @click="showCreateModal('file')" class="btn btn-green">+ File</button>
+                        <label class="btn btn-purple" style="margin: 0;">⬆ Upload<input type="file" @change="uploadFile" class="hidden" multiple></label>
+                        <button @click="modals.password = true" class="btn btn-gray">🔑 Password</button>
+                        <a href="?action=logout" class="btn btn-red">Logout</a>
+                    </div>
+                </div>
+            </div>
+        </header>
+        <div class="container">
+            <nav class="breadcrumb">
+                <button @click="navigateTo('')">Home</button>
+                <template v-for="(part, index) in breadcrumbs" :key="index">
+                    <span class="breadcrumb-sep">/</span>
+                    <button @click="navigateToBreadcrumb(index)">{{ part }}</button>
+                </template>
+            </nav>
+        </div>
+        <main class="container">
+            <div v-if="loading" class="loading"><div class="spinner"></div><p class="loading-text">Loading...</p></div>
+            <div v-if="error" class="alert alert-error">{{ error }}</div>
+            <div v-if="successMessage" class="alert alert-success">{{ successMessage }}</div>
+            <div v-if="!loading" class="table-container">
+                <table>
+                    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+                    <tbody>
+                        <tr v-for="item in items" :key="item.path">
+                            <td><div class="item-name"><span class="item-icon">{{ item.type === 'directory' ? '📁' : '📄' }}</span><button @click="handleItemClick(item)" class="item-link">{{ item.name }}</button></div></td>
+                            <td>{{ item.type === 'directory' ? '-' : formatSize(item.size) }}</td>
+                            <td>{{ formatDate(item.modified) }}</td>
+                            <td><div class="actions">
+                                <button v-if="item.type === 'file' && isArchive(item.name)" @click="extractItem(item)" class="action-btn action-orange">Extract</button>
+                                <button v-if="item.type === 'file'" @click="downloadFile(item)" class="action-btn action-blue">Download</button>
+                                <button v-if="item.type === 'file'" @click="viewFile(item)" class="action-btn action-green">View</button>
+                                <button v-if="item.name !== '..'" @click="showCompressModal(item)" class="action-btn action-orange">Compress</button>
+                                <button v-if="item.name !== '..'" @click="showRenameModal(item)" class="action-btn action-yellow">Rename</button>
+                                <button v-if="item.name !== '..'" @click="deleteItem(item)" class="action-btn action-red">Delete</button>
+                            </div></td>
+                        </tr>
+                        <tr v-if="items.length === 0"><td colspan="4" class="empty-state">Empty directory</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+
+        <!-- Modals -->
+        <div v-if="modals.create" class="modal-overlay" @click.self="modals.create = false">
+            <div class="modal">
+                <h3 class="modal-title">Create {{ createType === 'directory' ? 'Folder' : 'File' }}</h3>
+                <input v-model="createName" @keyup.enter="createItem" type="text" class="input">
+                <div class="modal-footer">
+                    <button @click="modals.create = false" class="btn btn-gray">Cancel</button>
+                    <button @click="createItem" class="btn btn-blue">Create</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="modals.rename" class="modal-overlay" @click.self="modals.rename = false">
+            <div class="modal">
+                <h3 class="modal-title">Rename</h3>
+                <input v-model="renameNewName" @keyup.enter="renameItem" type="text" class="input">
+                <div class="modal-footer">
+                    <button @click="modals.rename = false" class="btn btn-gray">Cancel</button>
+                    <button @click="renameItem" class="btn btn-blue">Rename</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="modals.compress" class="modal-overlay" @click.self="modals.compress = false">
+            <div class="modal">
+                <h3 class="modal-title">Compress: {{ compressItem ? compressItem.name : '' }}</h3>
+                <div class="format-grid">
+                    <button @click="selectedFormat = 'zip'" :class="['format-btn', { selected: selectedFormat === 'zip' }]">📦 ZIP</button>
+                    <button @click="selectedFormat = 'tar'" :class="['format-btn', { selected: selectedFormat === 'tar' }]">📦 TAR</button>
+                    <button @click="selectedFormat = 'tar.gz'" :class="['format-btn', { selected: selectedFormat === 'tar.gz' }]">📦 TAR.GZ</button>
+                    <button @click="selectedFormat = 'tar.bz2'" :class="['format-btn', { selected: selectedFormat === 'tar.bz2' }]">📦 TAR.BZ2</button>
+                </div>
+                <div class="modal-footer">
+                    <button @click="modals.compress = false" class="btn btn-gray">Cancel</button>
+                    <button @click="compressItem && compress(compressItem, selectedFormat)" class="btn btn-orange">Compress</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="modals.password" class="modal-overlay" @click.self="modals.password = false">
+            <div class="modal">
+                <h3 class="modal-title">Change Password</h3>
+                <input v-model="passwordData.current" type="password" placeholder="Current password" class="input">
+                <input v-model="passwordData.new" type="password" placeholder="New password (min 6 chars)" class="input">
+                <input v-model="passwordData.confirm" type="password" placeholder="Confirm new password" class="input">
+                <div class="modal-footer">
+                    <button @click="modals.password = false" class="btn btn-gray">Cancel</button>
+                    <button @click="changePassword" class="btn btn-blue">Change</button>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="modals.view" class="modal-overlay" @click.self="closeViewModal">
+            <div class="modal modal-large">
+                <div class="modal-header">
+                    <h3 class="modal-title">{{ viewingFile ? viewingFile.name : '' }}</h3>
+                    <button @click="closeViewModal" class="modal-close">×</button>
+                </div>
+                <div class="modal-body">
+                    <textarea v-model="fileContent" class="input textarea"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button @click="closeViewModal" class="btn btn-gray">Close</button>
+                    <button @click="saveFile" class="btn btn-blue">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer style="text-align: center; padding: 2rem 1rem; color: #6b7280; font-size: 0.875rem;">
+        <p>Single PHP File Manager v<?php echo defined('APP_VERSION') ? APP_VERSION : '1.0.0'; ?></p>
+        <p><a href="https://github.com/Al-Waleed-IT/single-php-file-manager" target="_blank" style="color: #2563eb;">GitHub</a> • <a href="https://github.com/Al-Waleed-IT/single-php-file-manager/issues" target="_blank" style="color: #2563eb;">Report Issue</a></p>
+    </footer>
+
+    <script>/* VUE_PLACEHOLDER */</script>
+    <script>/* JS_PLACEHOLDER */</script>
+</body>
+</html>
