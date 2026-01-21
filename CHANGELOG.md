@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.2026.0121.3] - 2026-01-21
+
+- Fix README screenshots (3b60586)
+- docs: Update CHANGELOG for v1.2026.0121.1 [skip ci] (20e88d0)
+
+
+All notable changes to this project will be documented in this file.
+
 ## [v1.2026.0121.1] - 2026-01-21
 
 
