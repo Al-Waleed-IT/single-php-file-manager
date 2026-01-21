@@ -73,13 +73,13 @@ The built file will be in `dist/filemanager.php`
 ## 📸 Screenshots
 
 ### Login Screen
-![Login Screen](https://via.placeholder.com/800x400/667eea/ffffff?text=Login+Screen)
+![Login Screen](screenshots/login-screen.png)
 
 ### File Manager Interface
-![File Manager](https://via.placeholder.com/800x400/16a34a/ffffff?text=File+Manager+Interface)
+![File Manager](screenshots/file-manager-interface.png)
 
 ### Archive Operations
-![Archives](https://via.placeholder.com/800x400/ea580c/ffffff?text=Archive+Operations)
+![Archives](screenshots/archive-operations.png)
 
 ## 🏗️ Project Structure
 
