@@ -18,7 +18,7 @@
                     <div class="btn-group">
                         <button @click="showCreateModal('directory')" class="btn btn-blue">+ Folder</button>
                         <button @click="showCreateModal('file')" class="btn btn-green">+ File</button>
-                        <label class="btn btn-purple" style="margin: 0;">⬆ Upload<input type="file" @change="uploadFile" class="hidden" multiple></label>
+                        <label class="btn btn-purple" style="margin: 0;">⬆ Upload<input ref="uploadInput" type="file" @change="uploadFile" class="hidden" multiple></label>
                         <button @click="modals.password = true" class="btn btn-gray">🔑 Password</button>
                         <a href="?action=logout" class="btn btn-red">Logout</a>
                     </div>
@@ -38,12 +38,42 @@
             <div v-if="loading" class="loading"><div class="spinner"></div><p class="loading-text">Loading...</p></div>
             <div v-if="error" class="alert alert-error">{{ error }}</div>
             <div v-if="successMessage" class="alert alert-success">{{ successMessage }}</div>
-            <div v-if="!loading" class="table-container">
+            <div v-if="!loading && items.length" class="bulk-actions">
+                <div class="bulk-left">
+                    <button @click="toggleSelectAll" class="btn btn-gray" :disabled="!selectableItems.length">
+                        {{ allSelected ? 'Deselect All' : 'Select All' }}
+                    </button>
+                    <span v-if="selectedCount" class="bulk-count">{{ selectedCount }} selected</span>
+                </div>
+                <div class="bulk-right">
+                    <button @click="showMoveModal(null, true)" class="btn btn-purple" :disabled="!selectedCount">Move Selected</button>
+                    <button @click="bulkDelete" class="btn btn-red" :disabled="!selectedCount">Delete Selected</button>
+                </div>
+            </div>
+            <div v-if="!loading" class="table-container" @contextmenu.prevent="openContextMenu($event, null)">
                 <table>
-                    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th class="select-col">
+                                <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" :disabled="!selectableItems.length" aria-label="Select all">
+                            </th>
+                            <th>Name</th>
+                            <th>Size</th>
+                            <th>Modified</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr v-for="item in items" :key="item.path">
-                            <td><div class="item-name"><span class="item-icon">{{ item.type === 'directory' ? '📁' : '📄' }}</span><button @click="handleItemClick(item)" class="item-link">{{ item.name }}</button></div></td>
+                        <tr v-for="item in items" :key="item.path" :class="{ 'row-selected': isSelected(item) }" @contextmenu.prevent.stop="openContextMenu($event, item)">
+                            <td class="select-col">
+                                <input type="checkbox" :checked="isSelected(item)" @change="toggleItemSelection(item)" :disabled="item.name === '..'" aria-label="Select item">
+                            </td>
+                            <td>
+                                <div class="item-name">
+                                    <span class="item-icon">{{ item.type === 'directory' ? '📁' : '📄' }}</span>
+                                    <button @click="handleItemClick(item)" class="item-link">{{ item.name }}</button>
+                                </div>
+                            </td>
                             <td>{{ item.type === 'directory' ? '-' : formatSize(item.size) }}</td>
                             <td>{{ formatDate(item.modified) }}</td>
                             <td><div class="actions">
@@ -52,10 +82,11 @@
                                 <button v-if="item.type === 'file'" @click="viewFile(item)" class="action-btn action-green">View</button>
                                 <button v-if="item.name !== '..'" @click="showCompressModal(item)" class="action-btn action-orange">Compress</button>
                                 <button v-if="item.name !== '..'" @click="showRenameModal(item)" class="action-btn action-yellow">Rename</button>
+                                <button v-if="item.name !== '..'" @click="showMoveModal(item)" class="action-btn action-purple">Move</button>
                                 <button v-if="item.name !== '..'" @click="deleteItem(item)" class="action-btn action-red">Delete</button>
                             </div></td>
                         </tr>
-                        <tr v-if="items.length === 0"><td colspan="4" class="empty-state">Empty directory</td></tr>
+                        <tr v-if="items.length === 0"><td colspan="5" class="empty-state">Empty directory</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -100,6 +131,49 @@
             </div>
         </div>
 
+        <div v-if="modals.move" class="modal-overlay" @click.self="closeMoveModal">
+            <div class="modal">
+                <h3 class="modal-title">Move {{ moveTitle }}</h3>
+                <p class="modal-subtitle">Destination folder (relative to root)</p>
+                <input v-model="moveDestination" type="text" class="input" placeholder="e.g. projects/archive">
+                <div class="modal-actions-inline">
+                    <button class="btn btn-gray btn-sm" @click="setMoveDestination('')">Root</button>
+                    <button class="btn btn-gray btn-sm" @click="setMoveDestination(currentPath)">Current</button>
+                    <button class="btn btn-gray btn-sm" @click="browseMoveDestination">Browse Path</button>
+                </div>
+                <div class="move-browser">
+                    <div class="move-browser-header">
+                        <span>Browse folders</span>
+                        <button class="btn btn-gray btn-sm" @click="setMoveDestination(moveBrowserPath)">Use this folder</button>
+                    </div>
+                    <div class="move-breadcrumb">
+                        <button @click="loadMoveDirectory('')">Root</button>
+                        <template v-for="(part, index) in moveBrowserBreadcrumbs" :key="index">
+                            <span class="breadcrumb-sep">/</span>
+                            <button @click="navigateMoveBreadcrumb(index)">{{ part }}</button>
+                        </template>
+                    </div>
+                    <div v-if="moveBrowserLoading" class="move-browser-loading">Loading folders...</div>
+                    <div v-else-if="moveBrowserError" class="alert alert-error">{{ moveBrowserError }}</div>
+                    <div v-else class="move-browser-list">
+                        <div v-for="item in moveBrowserItems" :key="item.path" class="move-browser-item">
+                            <button class="move-browser-link" @click="openMoveFolder(item)">
+                                📁 {{ item.name }}
+                            </button>
+                            <div class="move-browser-actions">
+                                <button class="btn btn-gray btn-sm" @click.stop="setMoveDestination(item.path)" :disabled="item.name === '..'">Select</button>
+                            </div>
+                        </div>
+                        <div v-if="!moveBrowserItems.length" class="move-browser-empty">No folders found.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button @click="closeMoveModal" class="btn btn-gray">Cancel</button>
+                    <button @click="performMove" class="btn btn-blue">Move</button>
+                </div>
+            </div>
+        </div>
+
         <div v-if="modals.password" class="modal-overlay" @click.self="modals.password = false">
             <div class="modal">
                 <h3 class="modal-title">Change Password</h3>
@@ -127,6 +201,37 @@
                     <button @click="saveFile" class="btn btn-blue">Save</button>
                 </div>
             </div>
+        </div>
+
+        <div v-if="contextMenu.visible" class="context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop>
+            <template v-if="contextMenu.item">
+                <div class="context-title">{{ contextMenu.item.name }}</div>
+                <button v-if="contextMenu.item.type === 'directory'" @click="closeContextMenu(); handleItemClick(contextMenu.item)">Open</button>
+                <button v-if="contextMenu.item.type === 'file'" @click="closeContextMenu(); viewFile(contextMenu.item)">View</button>
+                <button v-if="contextMenu.item.type === 'file'" @click="closeContextMenu(); downloadFile(contextMenu.item)">Download</button>
+                <button v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); showRenameModal(contextMenu.item)">Rename</button>
+                <button v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); showMoveModal(contextMenu.item)">Move</button>
+                <button v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); showCompressModal(contextMenu.item)">Compress</button>
+                <button v-if="contextMenu.item.type === 'file' && isArchive(contextMenu.item.name)" @click="closeContextMenu(); extractItem(contextMenu.item)">Extract</button>
+                <template v-if="selectedCount > 1">
+                    <div class="menu-sep"></div>
+                    <button @click="closeContextMenu(); showMoveModal(null, true)">Move Selected ({{ selectedCount }})</button>
+                    <button class="danger" @click="closeContextMenu(); bulkDelete()">Delete Selected ({{ selectedCount }})</button>
+                </template>
+                <div class="menu-sep"></div>
+                <button class="danger" v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); deleteItem(contextMenu.item)">Delete</button>
+            </template>
+            <template v-else>
+                <button @click="closeContextMenu(); showCreateModal('directory')">New Folder</button>
+                <button @click="closeContextMenu(); showCreateModal('file')">New File</button>
+                <button @click="closeContextMenu(); triggerUpload()">Upload Files</button>
+                <div class="menu-sep"></div>
+                <button v-if="items.length" @click="closeContextMenu(); toggleSelectAll()">{{ allSelected ? 'Deselect All' : 'Select All' }}</button>
+                <button v-if="selectedCount" @click="closeContextMenu(); showMoveModal(null, true)">Move Selected ({{ selectedCount }})</button>
+                <button v-if="selectedCount" class="danger" @click="closeContextMenu(); bulkDelete()">Delete Selected ({{ selectedCount }})</button>
+                <div class="menu-sep"></div>
+                <button @click="closeContextMenu(); loadDirectory()">Refresh</button>
+            </template>
         </div>
     </div>
 

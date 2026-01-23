@@ -114,6 +114,66 @@ function renameItem($oldPath, $newName) {
     return true;
 }
 
+function moveItems($paths, $destination) {
+    if (!is_array($paths) || empty($paths)) {
+        throw new Exception('No items selected');
+    }
+
+    $destFullPath = getFullPath($destination);
+
+    if (!is_dir($destFullPath)) {
+        throw new Exception('Destination not found');
+    }
+
+    $result = array('moved' => 0, 'skipped' => 0);
+
+    foreach ($paths as $path) {
+        if ($path === '' || $path === null) {
+            continue;
+        }
+
+        $fullSourcePath = getFullPath($path);
+
+        if (!file_exists($fullSourcePath)) {
+            throw new Exception('File not found: ' . basename($path));
+        }
+
+        $baseName = basename($fullSourcePath);
+        $fullDestPath = rtrim($destFullPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $baseName;
+
+        $sourceReal = realpath($fullSourcePath);
+        $destReal = realpath($fullDestPath);
+        if ($sourceReal && $destReal && $sourceReal === $destReal) {
+            $result['skipped']++;
+            continue;
+        }
+
+        if (file_exists($fullDestPath)) {
+            throw new Exception('Target already exists: ' . $baseName);
+        }
+
+        if (is_dir($fullSourcePath)) {
+            $sourceDirReal = $sourceReal ? $sourceReal : realpath($fullSourcePath);
+            $destDirReal = realpath($destFullPath);
+            if ($sourceDirReal && $destDirReal) {
+                $sourcePrefix = rtrim($sourceDirReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                $destPrefix = rtrim($destDirReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                if ($destPrefix === $sourcePrefix || strpos($destPrefix, $sourcePrefix) === 0) {
+                    throw new Exception('Cannot move a folder into itself');
+                }
+            }
+        }
+
+        if (!rename($fullSourcePath, $fullDestPath)) {
+            throw new Exception('Failed to move: ' . $baseName);
+        }
+
+        $result['moved']++;
+    }
+
+    return $result;
+}
+
 function createItem($path, $name, $type) {
     $basePath = getFullPath($path);
     $newPath = $basePath . DIRECTORY_SEPARATOR . basename($name);

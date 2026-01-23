@@ -104,6 +104,25 @@ if (isset($_GET['action'])) {
                 echo json_encode(array('success' => true, 'message' => 'Extracted to: ' . $extractedTo));
                 break;
 
+            case 'move':
+                $destination = isset($_POST['destination']) ? $_POST['destination'] : '';
+                $paths = array();
+                if (isset($_POST['paths'])) {
+                    $paths = is_array($_POST['paths']) ? $_POST['paths'] : array($_POST['paths']);
+                } else {
+                    $singlePath = isset($_POST['path']) ? $_POST['path'] : '';
+                    if ($singlePath !== '') {
+                        $paths = array($singlePath);
+                    }
+                }
+                $result = moveItems($paths, $destination);
+                $message = 'Moved ' . $result['moved'] . ' item' . ($result['moved'] === 1 ? '' : 's');
+                if (!empty($result['skipped'])) {
+                    $message .= ' (' . $result['skipped'] . ' skipped)';
+                }
+                echo json_encode(array('success' => true, 'message' => $message));
+                break;
+
             case 'change_password':
                 $currentPassword = isset($_POST['currentPassword']) ? $_POST['currentPassword'] : '';
                 $newPassword = isset($_POST['newPassword']) ? $_POST['newPassword'] : '';

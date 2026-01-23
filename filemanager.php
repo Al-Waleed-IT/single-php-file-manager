@@ -1,10 +1,17 @@
 <?php
 /**
- * Single File PHP File Manager
- * PHP 5.6+ Compatible | Vue 3 Embedded | Authentication | Archive Support
+ * PHP File Manager
+ * Single File - Built from modular source
+ *
+ * @version 1.0.0
+ * @build 2026-01-23T22:29:09.588Z
+ * @repository https://github.com/Al-Waleed-IT/single-php-file-manager
+ * @license MIT
  */
 
-// Start session
+define('APP_VERSION', '1.0.0');
+define('APP_BUILD_DATE', '2026-01-23T22:29:09.588Z');
+
 session_start();
 
 // Configuration
@@ -13,7 +20,9 @@ define('MAX_UPLOAD_SIZE', 100 * 1024 * 1024); // 100MB
 define('USERS_FILE', __DIR__ . '/.users.json');
 define('BCRYPT_COST', 12);
 
-// Initialize default admin user
+
+// Authentication Functions
+
 function initializeUsers() {
     if (!file_exists(USERS_FILE)) {
         $defaultUser = array(
@@ -45,6 +54,40 @@ function isAuthenticated() {
     return isset($_SESSION['authenticated']) && $_SESSION['authenticated'] === true;
 }
 
+function updatePassword($username, $currentPassword, $newPassword) {
+    if (strlen($newPassword) < 6) {
+        throw new Exception('Password must be at least 6 characters');
+    }
+
+    $users = getUsers();
+    $found = false;
+
+    foreach ($users as $key => $user) {
+        if ($user['username'] === $username) {
+            if (!password_verify($currentPassword, $user['password'])) {
+                throw new Exception('Current password is incorrect');
+            }
+
+            $users[$key]['password'] = password_hash($newPassword, PASSWORD_BCRYPT, array('cost' => BCRYPT_COST));
+            $found = true;
+            break;
+        }
+    }
+
+    if (!$found) {
+        throw new Exception('User not found');
+    }
+
+    if (file_put_contents(USERS_FILE, json_encode($users)) === false) {
+        throw new Exception('Failed to save password');
+    }
+
+    return true;
+}
+
+
+// Filesystem Functions
+
 function sanitizePath($path) {
     $path = str_replace(array('/', '\\'), DIRECTORY_SEPARATOR, $path);
     $path = str_replace('..', '', $path);
@@ -65,12 +108,227 @@ function rmdirRecursive($dir) {
     return rmdir($dir);
 }
 
+function listDirectory($path) {
+    $fullPath = getFullPath($path);
+
+    if (!is_dir($fullPath)) {
+        throw new Exception('Invalid directory');
+    }
+
+    $items = array();
+    $files = scandir($fullPath);
+
+    foreach ($files as $file) {
+        if ($file === '.' || ($file === '..' && empty($path)) || $file === '.users.json') {
+            continue;
+        }
+
+        $itemPath = $fullPath . DIRECTORY_SEPARATOR . $file;
+        $relativePath = empty($path) ? $file : $path . DIRECTORY_SEPARATOR . $file;
+
+        $item = array(
+            'name' => $file,
+            'path' => $relativePath,
+            'type' => is_dir($itemPath) ? 'directory' : 'file',
+            'size' => is_file($itemPath) ? filesize($itemPath) : 0,
+            'modified' => filemtime($itemPath),
+            'readable' => is_readable($itemPath),
+            'writable' => is_writable($itemPath)
+        );
+
+        $items[] = $item;
+    }
+
+    return $items;
+}
+
+function uploadFile($path, $file) {
+    $fullPath = getFullPath($path);
+
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        throw new Exception('Upload error: ' . $file['error']);
+    }
+
+    if ($file['size'] > MAX_UPLOAD_SIZE) {
+        throw new Exception('File too large');
+    }
+
+    $targetPath = $fullPath . DIRECTORY_SEPARATOR . basename($file['name']);
+
+    if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
+        throw new Exception('Failed to save file');
+    }
+
+    return true;
+}
+
+function deleteItem($path) {
+    $fullPath = getFullPath($path);
+
+    if (!file_exists($fullPath)) {
+        throw new Exception('File not found');
+    }
+
+    if (is_dir($fullPath)) {
+        if (!rmdirRecursive($fullPath)) {
+            throw new Exception('Failed to delete directory');
+        }
+    } else {
+        if (!unlink($fullPath)) {
+            throw new Exception('Failed to delete file');
+        }
+    }
+
+    return true;
+}
+
+function renameItem($oldPath, $newName) {
+    $fullOldPath = getFullPath($oldPath);
+    $dir = dirname($fullOldPath);
+    $fullNewPath = $dir . DIRECTORY_SEPARATOR . basename($newName);
+
+    if (!file_exists($fullOldPath)) {
+        throw new Exception('File not found');
+    }
+
+    if (file_exists($fullNewPath)) {
+        throw new Exception('Target already exists');
+    }
+
+    if (!rename($fullOldPath, $fullNewPath)) {
+        throw new Exception('Failed to rename');
+    }
+
+    return true;
+}
+
+function moveItems($paths, $destination) {
+    if (!is_array($paths) || empty($paths)) {
+        throw new Exception('No items selected');
+    }
+
+    $destFullPath = getFullPath($destination);
+
+    if (!is_dir($destFullPath)) {
+        throw new Exception('Destination not found');
+    }
+
+    $result = array('moved' => 0, 'skipped' => 0);
+
+    foreach ($paths as $path) {
+        if ($path === '' || $path === null) {
+            continue;
+        }
+
+        $fullSourcePath = getFullPath($path);
+
+        if (!file_exists($fullSourcePath)) {
+            throw new Exception('File not found: ' . basename($path));
+        }
+
+        $baseName = basename($fullSourcePath);
+        $fullDestPath = rtrim($destFullPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $baseName;
+
+        $sourceReal = realpath($fullSourcePath);
+        $destReal = realpath($fullDestPath);
+        if ($sourceReal && $destReal && $sourceReal === $destReal) {
+            $result['skipped']++;
+            continue;
+        }
+
+        if (file_exists($fullDestPath)) {
+            throw new Exception('Target already exists: ' . $baseName);
+        }
+
+        if (is_dir($fullSourcePath)) {
+            $sourceDirReal = $sourceReal ? $sourceReal : realpath($fullSourcePath);
+            $destDirReal = realpath($destFullPath);
+            if ($sourceDirReal && $destDirReal) {
+                $sourcePrefix = rtrim($sourceDirReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                $destPrefix = rtrim($destDirReal, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+                if ($destPrefix === $sourcePrefix || strpos($destPrefix, $sourcePrefix) === 0) {
+                    throw new Exception('Cannot move a folder into itself');
+                }
+            }
+        }
+
+        if (!rename($fullSourcePath, $fullDestPath)) {
+            throw new Exception('Failed to move: ' . $baseName);
+        }
+
+        $result['moved']++;
+    }
+
+    return $result;
+}
+
+function createItem($path, $name, $type) {
+    $basePath = getFullPath($path);
+    $newPath = $basePath . DIRECTORY_SEPARATOR . basename($name);
+
+    if (file_exists($newPath)) {
+        throw new Exception('Already exists');
+    }
+
+    if ($type === 'directory') {
+        if (!mkdir($newPath, 0755)) {
+            throw new Exception('Failed to create directory');
+        }
+    } else {
+        if (file_put_contents($newPath, '') === false) {
+            throw new Exception('Failed to create file');
+        }
+    }
+
+    return true;
+}
+
+function readFileContent($path) {
+    $fullPath = getFullPath($path);
+
+    if (!is_file($fullPath)) {
+        throw new Exception('Not a file');
+    }
+
+    if (filesize($fullPath) > 1024 * 1024) {
+        throw new Exception('File too large to preview');
+    }
+
+    return file_get_contents($fullPath);
+}
+
+function writeFile($path, $content) {
+    $fullPath = getFullPath($path);
+
+    if (file_put_contents($fullPath, $content) === false) {
+        throw new Exception('Failed to write file');
+    }
+
+    return true;
+}
+
+function downloadFile($path) {
+    $fullPath = getFullPath($path);
+
+    if (!is_file($fullPath)) {
+        throw new Exception('File not found');
+    }
+
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . basename($fullPath) . '"');
+    header('Content-Length: ' . filesize($fullPath));
+    readfile($fullPath);
+    exit;
+}
+
+
 // Archive Functions
+
 function createZipArchive($sourcePath, $zipPath) {
     if (!class_exists('ZipArchive')) {
         throw new Exception('ZipArchive not available');
     }
-    
+
     $zip = new ZipArchive();
     if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
         throw new Exception('Cannot create zip file');
@@ -91,7 +349,7 @@ function addDirectoryToZip($zip, $dir, $zipDir = '') {
     foreach ($files as $file) {
         $filePath = $dir . DIRECTORY_SEPARATOR . $file;
         $zipPath = $zipDir ? $zipDir . '/' . $file : $file;
-        
+
         if (is_dir($filePath)) {
             $zip->addEmptyDir($zipPath);
             addDirectoryToZip($zip, $filePath, $zipPath);
@@ -112,7 +370,7 @@ function createTarArchive($sourcePath, $tarPath, $compression = '') {
     }
 
     $phar = new PharData($pharFile);
-    
+
     if (is_file($sourcePath)) {
         $phar->addFile($sourcePath, basename($sourcePath));
     } else {
@@ -130,6 +388,41 @@ function createTarArchive($sourcePath, $tarPath, $compression = '') {
     }
 
     return true;
+}
+
+function compressItem($path, $format) {
+    $fullPath = getFullPath($path);
+
+    if (!file_exists($fullPath)) {
+        throw new Exception('Source not found');
+    }
+
+    $baseName = basename($fullPath);
+    $parentDir = dirname($fullPath);
+    $archiveName = $baseName . '.' . $format;
+    $archivePath = $parentDir . DIRECTORY_SEPARATOR . $archiveName;
+
+    // Avoid overwriting
+    $counter = 1;
+    while (file_exists($archivePath)) {
+        $archiveName = $baseName . '_' . $counter . '.' . $format;
+        $archivePath = $parentDir . DIRECTORY_SEPARATOR . $archiveName;
+        $counter++;
+    }
+
+    if ($format === 'zip') {
+        createZipArchive($fullPath, $archivePath);
+    } elseif ($format === 'tar') {
+        createTarArchive($fullPath, $archivePath);
+    } elseif ($format === 'tar.gz') {
+        createTarArchive($fullPath, $archivePath, 'gz');
+    } elseif ($format === 'tar.bz2') {
+        createTarArchive($fullPath, $archivePath, 'bz2');
+    } else {
+        throw new Exception('Unsupported format');
+    }
+
+    return $archiveName;
 }
 
 function extractArchive($archivePath, $extractTo) {
@@ -173,10 +466,43 @@ function extractTar($tarPath, $extractTo) {
     }
 }
 
-// Handle login/logout
+function extractItem($path) {
+    $fullPath = getFullPath($path);
+
+    if (!is_file($fullPath)) {
+        throw new Exception('Archive not found');
+    }
+
+    $parentDir = dirname($fullPath);
+    $baseName = pathinfo($fullPath, PATHINFO_FILENAME);
+
+    // For .tar.gz, .tar.bz2, etc., get the base name without extensions
+    if (preg_match('/\\.tar\\.(gz|bz2|xz)$/', basename($fullPath))) {
+        $baseName = preg_replace('/\\.tar\\.(gz|bz2|xz)$/', '', basename($fullPath));
+    }
+
+    $extractPath = $parentDir . DIRECTORY_SEPARATOR . $baseName;
+
+    // Avoid overwriting
+    $counter = 1;
+    while (file_exists($extractPath)) {
+        $extractPath = $parentDir . DIRECTORY_SEPARATOR . $baseName . '_' . $counter;
+        $counter++;
+    }
+
+    mkdir($extractPath, 0755);
+    extractArchive($fullPath, $extractPath);
+
+    return basename($extractPath);
+}
+
+
+// API Handler
+
 if (isset($_GET['action'])) {
     $action = $_GET['action'];
 
+    // Login endpoint
     if ($action === 'login') {
         header('Content-Type: application/json');
         $username = isset($_POST['username']) ? $_POST['username'] : '';
@@ -192,6 +518,7 @@ if (isset($_GET['action'])) {
         exit;
     }
 
+    // Logout endpoint
     if ($action === 'logout') {
         session_destroy();
         header('Location: ' . $_SERVER['PHP_SELF']);
@@ -211,102 +538,29 @@ if (isset($_GET['action'])) {
         switch ($action) {
             case 'list':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
-                $fullPath = getFullPath($path);
-
-                if (!is_dir($fullPath)) {
-                    throw new Exception('Invalid directory');
-                }
-
-                $items = array();
-                $files = scandir($fullPath);
-
-                foreach ($files as $file) {
-                    if ($file === '.' || ($file === '..' && empty($path)) || $file === '.users.json') {
-                        continue;
-                    }
-
-                    $itemPath = $fullPath . DIRECTORY_SEPARATOR . $file;
-                    $relativePath = empty($path) ? $file : $path . DIRECTORY_SEPARATOR . $file;
-
-                    $item = array(
-                        'name' => $file,
-                        'path' => $relativePath,
-                        'type' => is_dir($itemPath) ? 'directory' : 'file',
-                        'size' => is_file($itemPath) ? filesize($itemPath) : 0,
-                        'modified' => filemtime($itemPath),
-                        'readable' => is_readable($itemPath),
-                        'writable' => is_writable($itemPath)
-                    );
-
-                    $items[] = $item;
-                }
-
+                $items = listDirectory($path);
                 echo json_encode(array('success' => true, 'items' => $items, 'current' => $path));
                 break;
 
             case 'upload':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
-                $fullPath = getFullPath($path);
-
                 if (!isset($_FILES['file'])) {
                     throw new Exception('No file uploaded');
                 }
-
-                $file = $_FILES['file'];
-                if ($file['error'] !== UPLOAD_ERR_OK) {
-                    throw new Exception('Upload error: ' . $file['error']);
-                }
-                if ($file['size'] > MAX_UPLOAD_SIZE) {
-                    throw new Exception('File too large');
-                }
-
-                $targetPath = $fullPath . DIRECTORY_SEPARATOR . basename($file['name']);
-                if (!move_uploaded_file($file['tmp_name'], $targetPath)) {
-                    throw new Exception('Failed to save file');
-                }
-
+                uploadFile($path, $_FILES['file']);
                 echo json_encode(array('success' => true, 'message' => 'File uploaded'));
                 break;
 
             case 'delete':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
-                $fullPath = getFullPath($path);
-
-                if (!file_exists($fullPath)) {
-                    throw new Exception('File not found');
-                }
-
-                if (is_dir($fullPath)) {
-                    if (!rmdirRecursive($fullPath)) {
-                        throw new Exception('Failed to delete directory');
-                    }
-                } else {
-                    if (!unlink($fullPath)) {
-                        throw new Exception('Failed to delete file');
-                    }
-                }
-
+                deleteItem($path);
                 echo json_encode(array('success' => true, 'message' => 'Deleted'));
                 break;
 
             case 'rename':
                 $oldPath = isset($_POST['oldPath']) ? $_POST['oldPath'] : '';
                 $newName = isset($_POST['newName']) ? $_POST['newName'] : '';
-
-                $fullOldPath = getFullPath($oldPath);
-                $dir = dirname($fullOldPath);
-                $fullNewPath = $dir . DIRECTORY_SEPARATOR . basename($newName);
-
-                if (!file_exists($fullOldPath)) {
-                    throw new Exception('File not found');
-                }
-                if (file_exists($fullNewPath)) {
-                    throw new Exception('Target already exists');
-                }
-                if (!rename($fullOldPath, $fullNewPath)) {
-                    throw new Exception('Failed to rename');
-                }
-
+                renameItem($oldPath, $newName);
                 echo json_encode(array('success' => true, 'message' => 'Renamed'));
                 break;
 
@@ -314,167 +568,64 @@ if (isset($_GET['action'])) {
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
                 $name = isset($_POST['name']) ? $_POST['name'] : '';
                 $type = isset($_POST['type']) ? $_POST['type'] : 'directory';
-
-                $basePath = getFullPath($path);
-                $newPath = $basePath . DIRECTORY_SEPARATOR . basename($name);
-
-                if (file_exists($newPath)) {
-                    throw new Exception('Already exists');
-                }
-
-                if ($type === 'directory') {
-                    if (!mkdir($newPath, 0755)) {
-                        throw new Exception('Failed to create directory');
-                    }
-                } else {
-                    if (file_put_contents($newPath, '') === false) {
-                        throw new Exception('Failed to create file');
-                    }
-                }
-
+                createItem($path, $name, $type);
                 echo json_encode(array('success' => true, 'message' => 'Created'));
                 break;
 
             case 'read':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
-                $fullPath = getFullPath($path);
-
-                if (!is_file($fullPath)) {
-                    throw new Exception('Not a file');
-                }
-                if (filesize($fullPath) > 1024 * 1024) {
-                    throw new Exception('File too large to preview');
-                }
-
-                $content = file_get_contents($fullPath);
+                $content = readFileContent($path);
                 echo json_encode(array('success' => true, 'content' => $content));
                 break;
 
             case 'write':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
                 $content = isset($_POST['content']) ? $_POST['content'] : '';
-                $fullPath = getFullPath($path);
-
-                if (file_put_contents($fullPath, $content) === false) {
-                    throw new Exception('Failed to write file');
-                }
-
+                writeFile($path, $content);
                 echo json_encode(array('success' => true, 'message' => 'Saved'));
                 break;
 
             case 'download':
                 $path = isset($_GET['path']) ? $_GET['path'] : '';
-                $fullPath = getFullPath($path);
-
-                if (!is_file($fullPath)) {
-                    throw new Exception('File not found');
-                }
-
-                header('Content-Type: application/octet-stream');
-                header('Content-Disposition: attachment; filename="' . basename($fullPath) . '"');
-                header('Content-Length: ' . filesize($fullPath));
-                readfile($fullPath);
-                exit;
+                downloadFile($path);
+                break;
 
             case 'compress':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
                 $format = isset($_POST['format']) ? $_POST['format'] : 'zip';
-                $fullPath = getFullPath($path);
-
-                if (!file_exists($fullPath)) {
-                    throw new Exception('Source not found');
-                }
-
-                $baseName = basename($fullPath);
-                $parentDir = dirname($fullPath);
-                $archiveName = $baseName . '.' . $format;
-                $archivePath = $parentDir . DIRECTORY_SEPARATOR . $archiveName;
-
-                // Avoid overwriting
-                $counter = 1;
-                while (file_exists($archivePath)) {
-                    $archiveName = $baseName . '_' . $counter . '.' . $format;
-                    $archivePath = $parentDir . DIRECTORY_SEPARATOR . $archiveName;
-                    $counter++;
-                }
-
-                if ($format === 'zip') {
-                    createZipArchive($fullPath, $archivePath);
-                } elseif ($format === 'tar') {
-                    createTarArchive($fullPath, $archivePath);
-                } elseif ($format === 'tar.gz') {
-                    createTarArchive($fullPath, $archivePath, 'gz');
-                } elseif ($format === 'tar.bz2') {
-                    createTarArchive($fullPath, $archivePath, 'bz2');
-                } else {
-                    throw new Exception('Unsupported format');
-                }
-
+                $archiveName = compressItem($path, $format);
                 echo json_encode(array('success' => true, 'message' => 'Archive created: ' . $archiveName));
                 break;
 
             case 'extract':
                 $path = isset($_POST['path']) ? $_POST['path'] : '';
-                $fullPath = getFullPath($path);
+                $extractedTo = extractItem($path);
+                echo json_encode(array('success' => true, 'message' => 'Extracted to: ' . $extractedTo));
+                break;
 
-                if (!is_file($fullPath)) {
-                    throw new Exception('Archive not found');
+            case 'move':
+                $destination = isset($_POST['destination']) ? $_POST['destination'] : '';
+                $paths = array();
+                if (isset($_POST['paths'])) {
+                    $paths = is_array($_POST['paths']) ? $_POST['paths'] : array($_POST['paths']);
+                } else {
+                    $singlePath = isset($_POST['path']) ? $_POST['path'] : '';
+                    if ($singlePath !== '') {
+                        $paths = array($singlePath);
+                    }
                 }
-
-                $parentDir = dirname($fullPath);
-                $baseName = pathinfo($fullPath, PATHINFO_FILENAME);
-                
-                // For .tar.gz, .tar.bz2, etc., get the base name without extensions
-                if (preg_match('/\\.tar\\.(gz|bz2|xz)$/', basename($fullPath))) {
-                    $baseName = preg_replace('/\\.tar\\.(gz|bz2|xz)$/', '', basename($fullPath));
+                $result = moveItems($paths, $destination);
+                $message = 'Moved ' . $result['moved'] . ' item' . ($result['moved'] === 1 ? '' : 's');
+                if (!empty($result['skipped'])) {
+                    $message .= ' (' . $result['skipped'] . ' skipped)';
                 }
-
-                $extractPath = $parentDir . DIRECTORY_SEPARATOR . $baseName;
-
-                // Avoid overwriting
-                $counter = 1;
-                while (file_exists($extractPath)) {
-                    $extractPath = $parentDir . DIRECTORY_SEPARATOR . $baseName . '_' . $counter;
-                    $counter++;
-                }
-
-                mkdir($extractPath, 0755);
-                extractArchive($fullPath, $extractPath);
-
-                echo json_encode(array('success' => true, 'message' => 'Extracted to: ' . basename($extractPath)));
+                echo json_encode(array('success' => true, 'message' => $message));
                 break;
 
             case 'change_password':
                 $currentPassword = isset($_POST['currentPassword']) ? $_POST['currentPassword'] : '';
                 $newPassword = isset($_POST['newPassword']) ? $_POST['newPassword'] : '';
-
-                if (strlen($newPassword) < 6) {
-                    throw new Exception('Password must be at least 6 characters');
-                }
-
-                $users = getUsers();
-                $found = false;
-
-                foreach ($users as $key => $user) {
-                    if ($user['username'] === $_SESSION['username']) {
-                        if (!password_verify($currentPassword, $user['password'])) {
-                            throw new Exception('Current password is incorrect');
-                        }
-
-                        $users[$key]['password'] = password_hash($newPassword, PASSWORD_BCRYPT, array('cost' => BCRYPT_COST));
-                        $found = true;
-                        break;
-                    }
-                }
-
-                if (!$found) {
-                    throw new Exception('User not found');
-                }
-
-                if (file_put_contents(USERS_FILE, json_encode($users)) === false) {
-                    throw new Exception('Failed to save password');
-                }
-
+                updatePassword($_SESSION['username'], $currentPassword, $newPassword);
                 echo json_encode(array('success' => true, 'message' => 'Password changed'));
                 break;
 
@@ -488,8 +639,11 @@ if (isset($_GET['action'])) {
     exit;
 }
 
+
+// Initialize
 initializeUsers();
 
+// Show login or main page
 if (!isAuthenticated()) {
 ?>
 <!DOCTYPE html>
@@ -498,27 +652,587 @@ if (!isAuthenticated()) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - File Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .login-container { background: white; border-radius: 1rem; padding: 2rem; width: 100%; max-width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
-        .login-header { text-align: center; margin-bottom: 2rem; }
-        .login-icon { font-size: 4rem; margin-bottom: 1rem; }
-        h1 { font-size: 1.5rem; color: #111827; margin-bottom: 0.5rem; }
-        .login-subtitle { color: #6b7280; font-size: 0.875rem; }
-        .form-group { margin-bottom: 1rem; }
-        label { display: block; font-size: 0.875rem; font-weight: 500; color: #374151; margin-bottom: 0.5rem; }
-        input { width: 100%; padding: 0.75rem; border: 1px solid #d1d5db; border-radius: 0.5rem; font-size: 0.875rem; }
-        input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }
-        .btn-login { width: 100%; padding: 0.75rem; background: #667eea; color: white; border: none; border-radius: 0.5rem; font-size: 1rem; font-weight: 500; cursor: pointer; margin-top: 1rem; }
-        .btn-login:hover { background: #5568d3; }
-        .alert { padding: 0.75rem; border-radius: 0.5rem; margin-bottom: 1rem; font-size: 0.875rem; }
-        .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
-        .alert-info { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
-        .default-creds { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #e5e7eb; font-size: 0.75rem; color: #6b7280; text-align: center; }
-    </style>
+    <style>/* Base Styles */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    background: #f9fafb;
+    color: #111827;
+}
+.container { max-width: 1280px; margin: 0 auto; padding: 0 1rem; }
+.hidden { display: none; }
+
+/* Typography */
+h1 { font-size: 1.5rem; font-weight: 700; }
+
+/* Layout */
+header { background: white; border-bottom: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.header-content {
+    padding: 1rem 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+.header-left { display: flex; align-items: center; gap: 1rem; }
+main { padding: 2rem 0; }
+
+/* User Info */
+.user-info { font-size: 0.875rem; color: #6b7280; }
+
+/* Animations */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Buttons */
+.btn {
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    text-decoration: none;
+    display: inline-block;
+}
+.btn-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.btn-blue { background: #2563eb; color: white; }
+.btn-blue:hover { background: #1d4ed8; }
+.btn-green { background: #16a34a; color: white; }
+.btn-green:hover { background: #15803d; }
+.btn-purple { background: #9333ea; color: white; }
+.btn-purple:hover { background: #7e22ce; }
+.btn-orange { background: #ea580c; color: white; }
+.btn-orange:hover { background: #c2410c; }
+.btn-gray { background: #e5e7eb; color: #374151; }
+.btn-gray:hover { background: #d1d5db; }
+.btn-red { background: #dc2626; color: white; }
+.btn-red:hover { background: #b91c1c; }
+.btn-login {
+    width: 100%;
+    padding: 0.75rem;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    margin-top: 1rem;
+}
+.btn-login:hover { background: #5568d3; }
+
+/* Breadcrumb */
+.breadcrumb {
+    padding: 0.75rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.875rem;
+}
+.breadcrumb button {
+    background: none;
+    border: none;
+    color: #2563eb;
+    cursor: pointer;
+    font-weight: 500;
+}
+.breadcrumb button:hover { color: #1d4ed8; text-decoration: underline; }
+.breadcrumb-sep { color: #9ca3af; }
+
+/* Alerts */
+.alert {
+    padding: 1rem;
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    border: 1px solid;
+}
+.alert-error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.alert-success { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
+.alert-info { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+
+/* Loading */
+.loading { text-align: center; padding: 3rem 0; }
+.spinner {
+    display: inline-block;
+    width: 3rem;
+    height: 3rem;
+    border: 4px solid #e5e7eb;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+.loading-text { margin-top: 1rem; color: #6b7280; }
+
+/* Bulk Actions */
+.bulk-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+}
+.bulk-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+.bulk-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.bulk-count { font-size: 0.875rem; color: #6b7280; }
+
+/* Table */
+.table-container {
+    background: white;
+    border-radius: 0.5rem;
+    border: 1px solid #e5e7eb;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+table { width: 100%; border-collapse: collapse; }
+thead { background: #f9fafb; }
+th {
+    padding: 0.75rem 1.5rem;
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    color: #6b7280;
+}
+th.select-col,
+td.select-col {
+    width: 2.5rem;
+    padding-left: 1rem;
+    padding-right: 0.5rem;
+}
+th.select-col { text-transform: none; }
+th.select-col input,
+td.select-col input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: #2563eb;
+    cursor: pointer;
+}
+tbody tr { border-top: 1px solid #e5e7eb; transition: background 0.2s; }
+tbody tr:hover { background: #f9fafb; }
+tbody tr.row-selected { background: #eff6ff; }
+tbody tr.row-selected:hover { background: #e0f2fe; }
+td { padding: 1rem 1.5rem; font-size: 0.875rem; }
+.item-name { display: flex; align-items: center; gap: 0.75rem; }
+.item-icon { font-size: 1.5rem; }
+.item-link {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    color: #111827;
+    text-align: left;
+}
+.item-link:hover { color: #2563eb; }
+.empty-state { text-align: center; padding: 3rem 1.5rem; color: #6b7280; }
+
+/* Actions */
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.25rem 0.5rem;
+}
+.action-blue { color: #2563eb; }
+.action-green { color: #16a34a; }
+.action-yellow { color: #ca8a04; }
+.action-red { color: #dc2626; }
+.action-orange { color: #ea580c; }
+.action-purple { color: #7c3aed; }
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 1rem;
+}
+.modal {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 28rem;
+}
+.modal-subtitle {
+    font-size: 0.875rem;
+    color: #6b7280;
+    margin: 0.5rem 0 1rem;
+}
+.modal-actions-inline {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+}
+.btn-sm { padding: 0.35rem 0.75rem; font-size: 0.75rem; }
+
+/* Move Browser */
+.move-browser {
+    margin-top: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.6rem;
+    background: #f8fafc;
+    padding: 0.75rem;
+}
+.move-browser-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+    color: #4b5563;
+}
+.move-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+}
+.move-breadcrumb button {
+    background: none;
+    border: none;
+    color: #2563eb;
+    cursor: pointer;
+    padding: 0;
+}
+.move-browser-loading {
+    font-size: 0.85rem;
+    color: #6b7280;
+    padding: 0.5rem 0;
+}
+.move-browser-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-height: 220px;
+    overflow: auto;
+    padding-right: 0.25rem;
+}
+.move-browser-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 0.35rem 0.5rem;
+}
+.move-browser-link {
+    background: none;
+    border: none;
+    color: #111827;
+    font-size: 0.875rem;
+    cursor: pointer;
+    text-align: left;
+    flex: 1;
+}
+.move-browser-link:hover { color: #2563eb; }
+.move-browser-actions {
+    display: flex;
+    gap: 0.35rem;
+}
+.move-browser-empty {
+    text-align: center;
+    font-size: 0.85rem;
+    color: #6b7280;
+    padding: 0.75rem 0;
+}
+
+/* Context Menu */
+.context-menu {
+    position: fixed;
+    min-width: 210px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.6rem;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.16);
+    padding: 0.35rem;
+    z-index: 70;
+}
+.context-menu button {
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.45rem;
+    font-size: 0.875rem;
+    color: #111827;
+    cursor: pointer;
+}
+.context-menu button:hover { background: #f3f4f6; }
+.context-menu .danger { color: #dc2626; }
+.context-title {
+    font-size: 0.75rem;
+    color: #6b7280;
+    padding: 0.35rem 0.75rem 0.2rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.menu-sep {
+    height: 1px;
+    background: #e5e7eb;
+    margin: 0.35rem 0.25rem;
+}
+.modal-large {
+    max-width: 56rem;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+.modal-title { font-size: 1.125rem; font-weight: 700; margin-bottom: 1rem; }
+.modal-header {
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 2rem;
+    color: #6b7280;
+    cursor: pointer;
+}
+.modal-body { padding: 1.5rem 0; overflow: auto; flex: 1; }
+.modal-footer {
+    padding-top: 1rem;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+/* Form */
+.input {
+    width: 100%;
+    padding: 0.5rem 1rem;
+    border: 1px solid #d1d5db;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+}
+.input:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+}
+.textarea { min-height: 24rem; font-family: 'Courier New', monospace; resize: vertical; }
+
+/* Format Grid */
+.format-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.format-btn {
+    padding: 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 0.5rem;
+    background: white;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 500;
+}
+.format-btn:hover { border-color: #2563eb; background: #eff6ff; }
+.format-btn.selected {
+    border-color: #2563eb;
+    background: #eff6ff;
+    color: #2563eb;
+}
+
+/* Login Page */
+.login-page {
+    --login-ink: #1f2937;
+    --login-muted: #6b7280;
+    --login-accent: #0f766e;
+    --login-accent-dark: #115e59;
+    --login-surface: #ffffff;
+    --login-border: rgba(15, 23, 42, 0.08);
+    --login-shadow: 0 28px 60px rgba(15, 23, 42, 0.18);
+    --login-glow: 0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+    min-height: 100vh;
+    min-height: 100svh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2.75rem 1.5rem 3.5rem;
+    background:
+        radial-gradient(900px circle at 6% 8%, rgba(250, 204, 21, 0.16), transparent 55%),
+        radial-gradient(1100px circle at 92% 12%, rgba(56, 189, 248, 0.18), transparent 50%),
+        radial-gradient(700px circle at 50% 100%, rgba(20, 184, 166, 0.12), transparent 55%),
+        linear-gradient(150deg, #f8fafc 0%, #f5f6f8 35%, #edf6f3 100%);
+    color: var(--login-ink);
+    font-family: "Trebuchet MS", "Gill Sans", "Gill Sans MT", "Calibri", sans-serif;
+    position: relative;
+    overflow: hidden;
+}
+.login-page::before,
+.login-page::after {
+    content: "";
+    position: absolute;
+    width: 420px;
+    height: 420px;
+    border-radius: 48% 52% 60% 40%;
+    background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.1));
+    filter: blur(6px);
+    opacity: 0.55;
+    pointer-events: none;
+}
+.login-page::before { top: -160px; left: -120px; transform: rotate(-6deg); }
+.login-page::after { bottom: -200px; right: -140px; transform: rotate(8deg); }
+.login-page .login-container {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 1.5rem;
+    padding: 2.5rem 2.25rem;
+    width: min(92vw, 420px);
+    border: 1px solid var(--login-border);
+    box-shadow: var(--login-shadow), var(--login-glow);
+    backdrop-filter: blur(6px);
+    animation: loginCardIn 0.7s ease-out both;
+    position: relative;
+    z-index: 1;
+}
+.login-page .login-header { text-align: center; margin-bottom: 2rem; animation: fadeUp 0.6s ease-out 0.05s both; }
+.login-page .login-header h1 {
+    font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+    font-size: 1.65rem;
+    letter-spacing: 0.02em;
+    margin-bottom: 0.25rem;
+}
+.login-page .login-icon {
+    font-size: 2.4rem;
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: 1.3rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    background: linear-gradient(145deg, #fef3c7, #fde68a);
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+}
+.login-page .login-subtitle { color: var(--login-muted); font-size: 0.9rem; }
+.login-page .form-group { margin-bottom: 1.2rem; animation: fadeUp 0.6s ease-out both; }
+.login-page .form-group:nth-of-type(1) { animation-delay: 0.12s; }
+.login-page .form-group:nth-of-type(2) { animation-delay: 0.2s; }
+.login-page label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #334155;
+    margin-bottom: 0.4rem;
+}
+.login-page input {
+    width: 100%;
+    padding: 0.7rem 0.9rem;
+    border-radius: 0.85rem;
+    border: 1px solid rgba(148, 163, 184, 0.6);
+    background: #ffffff;
+    font-size: 0.95rem;
+    color: var(--login-ink);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.login-page input:focus {
+    outline: none;
+    border-color: rgba(14, 116, 144, 0.55);
+    box-shadow: 0 0 0 3px rgba(14, 116, 144, 0.2);
+}
+.login-page .btn-login {
+    width: 100%;
+    padding: 0.85rem;
+    background: linear-gradient(135deg, var(--login-accent), #1d4ed8);
+    color: white;
+    border: none;
+    border-radius: 0.9rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 0.75rem;
+    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.18);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+    animation: fadeUp 0.6s ease-out 0.28s both;
+}
+.login-page .btn-login:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 20px 34px rgba(15, 23, 42, 0.22);
+    filter: brightness(1.02);
+}
+.login-page .btn-login:active { transform: translateY(1px); }
+.login-page .default-creds {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.35);
+    font-size: 0.78rem;
+    color: var(--login-muted);
+    text-align: center;
+    animation: fadeUp 0.6s ease-out 0.35s both;
+}
+.login-page .default-creds .alert-info {
+    background: rgba(239, 246, 255, 0.8);
+    border-color: rgba(147, 197, 253, 0.6);
+    color: #1e3a8a;
+}
+@keyframes loginCardIn {
+    from { opacity: 0; transform: translateY(18px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .login-page .login-container,
+    .login-page .login-header,
+    .login-page .form-group,
+    .login-page .btn-login,
+    .login-page .default-creds { animation: none; }
+    .login-page .btn-login:hover { transform: none; }
+}
+label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #374151;
+    margin-bottom: 0.5rem;
+}
+/* Responsive */
+@media (max-width: 640px) {
+    .header-content { flex-direction: column; align-items: stretch; }
+    .btn-group { width: 100%; }
+    .btn { flex: 1; text-align: center; }
+    table { font-size: 0.75rem; }
+    th, td { padding: 0.5rem; }
+}
+</style>
 </head>
-<body>
+<body class="login-page">
     <div class="login-container">
         <div class="login-header">
             <div class="login-icon">🔐</div>
@@ -565,7 +1279,10 @@ if (!isAuthenticated()) {
     </script>
 </body>
 </html>
-<?php exit; }
+
+<?php
+exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -573,84 +1290,585 @@ if (!isAuthenticated()) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>File Manager</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; background: #f9fafb; color: #111827; }
-        .container { max-width: 1280px; margin: 0 auto; padding: 0 1rem; }
-        header { background: white; border-bottom: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .header-content { padding: 1rem 0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
-        .header-left { display: flex; align-items: center; gap: 1rem; }
-        h1 { font-size: 1.5rem; font-weight: 700; }
-        .user-info { font-size: 0.875rem; color: #6b7280; }
-        .btn-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-        .btn { padding: 0.5rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; text-decoration: none; display: inline-block; }
-        .btn-blue { background: #2563eb; color: white; }
-        .btn-blue:hover { background: #1d4ed8; }
-        .btn-green { background: #16a34a; color: white; }
-        .btn-green:hover { background: #15803d; }
-        .btn-purple { background: #9333ea; color: white; }
-        .btn-purple:hover { background: #7e22ce; }
-        .btn-orange { background: #ea580c; color: white; }
-        .btn-orange:hover { background: #c2410c; }
-        .btn-gray { background: #e5e7eb; color: #374151; }
-        .btn-gray:hover { background: #d1d5db; }
-        .btn-red { background: #dc2626; color: white; }
-        .btn-red:hover { background: #b91c1c; }
-        .breadcrumb { padding: 0.75rem 0; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-size: 0.875rem; }
-        .breadcrumb button { background: none; border: none; color: #2563eb; cursor: pointer; font-weight: 500; }
-        .breadcrumb button:hover { color: #1d4ed8; text-decoration: underline; }
-        .breadcrumb-sep { color: #9ca3af; }
-        main { padding: 2rem 0; }
-        .alert { padding: 1rem; border-radius: 0.5rem; margin-bottom: 1rem; border: 1px solid; }
-        .alert-error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
-        .alert-success { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
-        .loading { text-align: center; padding: 3rem 0; }
-        .spinner { display: inline-block; width: 3rem; height: 3rem; border: 4px solid #e5e7eb; border-top-color: #2563eb; border-radius: 50%; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .loading-text { margin-top: 1rem; color: #6b7280; }
-        .table-container { background: white; border-radius: 0.5rem; border: 1px solid #e5e7eb; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        table { width: 100%; border-collapse: collapse; }
-        thead { background: #f9fafb; }
-        th { padding: 0.75rem 1.5rem; text-align: left; font-size: 0.75rem; font-weight: 500; text-transform: uppercase; color: #6b7280; }
-        tbody tr { border-top: 1px solid #e5e7eb; transition: background 0.2s; }
-        tbody tr:hover { background: #f9fafb; }
-        td { padding: 1rem 1.5rem; font-size: 0.875rem; }
-        .item-name { display: flex; align-items: center; gap: 0.75rem; }
-        .item-icon { font-size: 1.5rem; }
-        .item-link { background: none; border: none; cursor: pointer; font-weight: 500; color: #111827; text-align: left; }
-        .item-link:hover { color: #2563eb; }
-        .empty-state { text-align: center; padding: 3rem 1.5rem; color: #6b7280; }
-        .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-        .action-btn { background: none; border: none; cursor: pointer; font-size: 0.875rem; font-weight: 500; padding: 0.25rem 0.5rem; }
-        .action-blue { color: #2563eb; }
-        .action-green { color: #16a34a; }
-        .action-yellow { color: #ca8a04; }
-        .action-red { color: #dc2626; }
-        .action-orange { color: #ea580c; }
-        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 1rem; }
-        .modal { background: white; border-radius: 0.5rem; padding: 1.5rem; width: 100%; max-width: 28rem; }
-        .modal-large { max-width: 56rem; max-height: 90vh; display: flex; flex-direction: column; }
-        .modal-title { font-size: 1.125rem; font-weight: 700; margin-bottom: 1rem; }
-        .modal-header { padding-bottom: 1rem; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; }
-        .modal-close { background: none; border: none; font-size: 2rem; color: #6b7280; cursor: pointer; }
-        .modal-body { padding: 1.5rem 0; overflow: auto; flex: 1; }
-        .modal-footer { padding-top: 1rem; border-top: 1px solid #e5e7eb; display: flex; justify-content: flex-end; gap: 0.5rem; }
-        .input { width: 100%; padding: 0.5rem 1rem; border: 1px solid #d1d5db; border-radius: 0.5rem; font-size: 0.875rem; margin-bottom: 1rem; }
-        .input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
-        .textarea { min-height: 24rem; font-family: 'Courier New', monospace; resize: vertical; }
-        .hidden { display: none; }
-        .format-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; margin-bottom: 1rem; }
-        .format-btn { padding: 0.75rem; border: 2px solid #e5e7eb; border-radius: 0.5rem; background: white; cursor: pointer; transition: all 0.2s; font-weight: 500; }
-        .format-btn:hover { border-color: #2563eb; background: #eff6ff; }
-        .format-btn.selected { border-color: #2563eb; background: #eff6ff; color: #2563eb; }
-        @media (max-width: 640px) {
-            .header-content { flex-direction: column; align-items: stretch; }
-            .btn-group { width: 100%; }
-            .btn { flex: 1; text-align: center; }
-            table { font-size: 0.75rem; }
-            th, td { padding: 0.5rem; }
-        }
-    </style>
+    <style>/* Base Styles */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    background: #f9fafb;
+    color: #111827;
+}
+.container { max-width: 1280px; margin: 0 auto; padding: 0 1rem; }
+.hidden { display: none; }
+
+/* Typography */
+h1 { font-size: 1.5rem; font-weight: 700; }
+
+/* Layout */
+header { background: white; border-bottom: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.header-content {
+    padding: 1rem 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+.header-left { display: flex; align-items: center; gap: 1rem; }
+main { padding: 2rem 0; }
+
+/* User Info */
+.user-info { font-size: 0.875rem; color: #6b7280; }
+
+/* Animations */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Buttons */
+.btn {
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    text-decoration: none;
+    display: inline-block;
+}
+.btn-group { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.btn-blue { background: #2563eb; color: white; }
+.btn-blue:hover { background: #1d4ed8; }
+.btn-green { background: #16a34a; color: white; }
+.btn-green:hover { background: #15803d; }
+.btn-purple { background: #9333ea; color: white; }
+.btn-purple:hover { background: #7e22ce; }
+.btn-orange { background: #ea580c; color: white; }
+.btn-orange:hover { background: #c2410c; }
+.btn-gray { background: #e5e7eb; color: #374151; }
+.btn-gray:hover { background: #d1d5db; }
+.btn-red { background: #dc2626; color: white; }
+.btn-red:hover { background: #b91c1c; }
+.btn-login {
+    width: 100%;
+    padding: 0.75rem;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    font-size: 1rem;
+    font-weight: 500;
+    cursor: pointer;
+    margin-top: 1rem;
+}
+.btn-login:hover { background: #5568d3; }
+
+/* Breadcrumb */
+.breadcrumb {
+    padding: 0.75rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font-size: 0.875rem;
+}
+.breadcrumb button {
+    background: none;
+    border: none;
+    color: #2563eb;
+    cursor: pointer;
+    font-weight: 500;
+}
+.breadcrumb button:hover { color: #1d4ed8; text-decoration: underline; }
+.breadcrumb-sep { color: #9ca3af; }
+
+/* Alerts */
+.alert {
+    padding: 1rem;
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    border: 1px solid;
+}
+.alert-error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.alert-success { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
+.alert-info { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+
+/* Loading */
+.loading { text-align: center; padding: 3rem 0; }
+.spinner {
+    display: inline-block;
+    width: 3rem;
+    height: 3rem;
+    border: 4px solid #e5e7eb;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+.loading-text { margin-top: 1rem; color: #6b7280; }
+
+/* Bulk Actions */
+.bulk-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+}
+.bulk-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+.bulk-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.bulk-count { font-size: 0.875rem; color: #6b7280; }
+
+/* Table */
+.table-container {
+    background: white;
+    border-radius: 0.5rem;
+    border: 1px solid #e5e7eb;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+table { width: 100%; border-collapse: collapse; }
+thead { background: #f9fafb; }
+th {
+    padding: 0.75rem 1.5rem;
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    color: #6b7280;
+}
+th.select-col,
+td.select-col {
+    width: 2.5rem;
+    padding-left: 1rem;
+    padding-right: 0.5rem;
+}
+th.select-col { text-transform: none; }
+th.select-col input,
+td.select-col input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: #2563eb;
+    cursor: pointer;
+}
+tbody tr { border-top: 1px solid #e5e7eb; transition: background 0.2s; }
+tbody tr:hover { background: #f9fafb; }
+tbody tr.row-selected { background: #eff6ff; }
+tbody tr.row-selected:hover { background: #e0f2fe; }
+td { padding: 1rem 1.5rem; font-size: 0.875rem; }
+.item-name { display: flex; align-items: center; gap: 0.75rem; }
+.item-icon { font-size: 1.5rem; }
+.item-link {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    color: #111827;
+    text-align: left;
+}
+.item-link:hover { color: #2563eb; }
+.empty-state { text-align: center; padding: 3rem 1.5rem; color: #6b7280; }
+
+/* Actions */
+.actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.action-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.25rem 0.5rem;
+}
+.action-blue { color: #2563eb; }
+.action-green { color: #16a34a; }
+.action-yellow { color: #ca8a04; }
+.action-red { color: #dc2626; }
+.action-orange { color: #ea580c; }
+.action-purple { color: #7c3aed; }
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+    padding: 1rem;
+}
+.modal {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    width: 100%;
+    max-width: 28rem;
+}
+.modal-subtitle {
+    font-size: 0.875rem;
+    color: #6b7280;
+    margin: 0.5rem 0 1rem;
+}
+.modal-actions-inline {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+}
+.btn-sm { padding: 0.35rem 0.75rem; font-size: 0.75rem; }
+
+/* Move Browser */
+.move-browser {
+    margin-top: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.6rem;
+    background: #f8fafc;
+    padding: 0.75rem;
+}
+.move-browser-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    font-size: 0.875rem;
+    color: #4b5563;
+}
+.move-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    margin-bottom: 0.5rem;
+}
+.move-breadcrumb button {
+    background: none;
+    border: none;
+    color: #2563eb;
+    cursor: pointer;
+    padding: 0;
+}
+.move-browser-loading {
+    font-size: 0.85rem;
+    color: #6b7280;
+    padding: 0.5rem 0;
+}
+.move-browser-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-height: 220px;
+    overflow: auto;
+    padding-right: 0.25rem;
+}
+.move-browser-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 0.35rem 0.5rem;
+}
+.move-browser-link {
+    background: none;
+    border: none;
+    color: #111827;
+    font-size: 0.875rem;
+    cursor: pointer;
+    text-align: left;
+    flex: 1;
+}
+.move-browser-link:hover { color: #2563eb; }
+.move-browser-actions {
+    display: flex;
+    gap: 0.35rem;
+}
+.move-browser-empty {
+    text-align: center;
+    font-size: 0.85rem;
+    color: #6b7280;
+    padding: 0.75rem 0;
+}
+
+/* Context Menu */
+.context-menu {
+    position: fixed;
+    min-width: 210px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.6rem;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.16);
+    padding: 0.35rem;
+    z-index: 70;
+}
+.context-menu button {
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.45rem;
+    font-size: 0.875rem;
+    color: #111827;
+    cursor: pointer;
+}
+.context-menu button:hover { background: #f3f4f6; }
+.context-menu .danger { color: #dc2626; }
+.context-title {
+    font-size: 0.75rem;
+    color: #6b7280;
+    padding: 0.35rem 0.75rem 0.2rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.menu-sep {
+    height: 1px;
+    background: #e5e7eb;
+    margin: 0.35rem 0.25rem;
+}
+.modal-large {
+    max-width: 56rem;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+.modal-title { font-size: 1.125rem; font-weight: 700; margin-bottom: 1rem; }
+.modal-header {
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 2rem;
+    color: #6b7280;
+    cursor: pointer;
+}
+.modal-body { padding: 1.5rem 0; overflow: auto; flex: 1; }
+.modal-footer {
+    padding-top: 1rem;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+/* Form */
+.input {
+    width: 100%;
+    padding: 0.5rem 1rem;
+    border: 1px solid #d1d5db;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+}
+.input:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+}
+.textarea { min-height: 24rem; font-family: 'Courier New', monospace; resize: vertical; }
+
+/* Format Grid */
+.format-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+.format-btn {
+    padding: 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 0.5rem;
+    background: white;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-weight: 500;
+}
+.format-btn:hover { border-color: #2563eb; background: #eff6ff; }
+.format-btn.selected {
+    border-color: #2563eb;
+    background: #eff6ff;
+    color: #2563eb;
+}
+
+/* Login Page */
+.login-page {
+    --login-ink: #1f2937;
+    --login-muted: #6b7280;
+    --login-accent: #0f766e;
+    --login-accent-dark: #115e59;
+    --login-surface: #ffffff;
+    --login-border: rgba(15, 23, 42, 0.08);
+    --login-shadow: 0 28px 60px rgba(15, 23, 42, 0.18);
+    --login-glow: 0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+    min-height: 100vh;
+    min-height: 100svh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2.75rem 1.5rem 3.5rem;
+    background:
+        radial-gradient(900px circle at 6% 8%, rgba(250, 204, 21, 0.16), transparent 55%),
+        radial-gradient(1100px circle at 92% 12%, rgba(56, 189, 248, 0.18), transparent 50%),
+        radial-gradient(700px circle at 50% 100%, rgba(20, 184, 166, 0.12), transparent 55%),
+        linear-gradient(150deg, #f8fafc 0%, #f5f6f8 35%, #edf6f3 100%);
+    color: var(--login-ink);
+    font-family: "Trebuchet MS", "Gill Sans", "Gill Sans MT", "Calibri", sans-serif;
+    position: relative;
+    overflow: hidden;
+}
+.login-page::before,
+.login-page::after {
+    content: "";
+    position: absolute;
+    width: 420px;
+    height: 420px;
+    border-radius: 48% 52% 60% 40%;
+    background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.1));
+    filter: blur(6px);
+    opacity: 0.55;
+    pointer-events: none;
+}
+.login-page::before { top: -160px; left: -120px; transform: rotate(-6deg); }
+.login-page::after { bottom: -200px; right: -140px; transform: rotate(8deg); }
+.login-page .login-container {
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 1.5rem;
+    padding: 2.5rem 2.25rem;
+    width: min(92vw, 420px);
+    border: 1px solid var(--login-border);
+    box-shadow: var(--login-shadow), var(--login-glow);
+    backdrop-filter: blur(6px);
+    animation: loginCardIn 0.7s ease-out both;
+    position: relative;
+    z-index: 1;
+}
+.login-page .login-header { text-align: center; margin-bottom: 2rem; animation: fadeUp 0.6s ease-out 0.05s both; }
+.login-page .login-header h1 {
+    font-family: "Palatino Linotype", "Book Antiqua", Palatino, serif;
+    font-size: 1.65rem;
+    letter-spacing: 0.02em;
+    margin-bottom: 0.25rem;
+}
+.login-page .login-icon {
+    font-size: 2.4rem;
+    width: 4.5rem;
+    height: 4.5rem;
+    border-radius: 1.3rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 1rem;
+    background: linear-gradient(145deg, #fef3c7, #fde68a);
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+}
+.login-page .login-subtitle { color: var(--login-muted); font-size: 0.9rem; }
+.login-page .form-group { margin-bottom: 1.2rem; animation: fadeUp 0.6s ease-out both; }
+.login-page .form-group:nth-of-type(1) { animation-delay: 0.12s; }
+.login-page .form-group:nth-of-type(2) { animation-delay: 0.2s; }
+.login-page label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #334155;
+    margin-bottom: 0.4rem;
+}
+.login-page input {
+    width: 100%;
+    padding: 0.7rem 0.9rem;
+    border-radius: 0.85rem;
+    border: 1px solid rgba(148, 163, 184, 0.6);
+    background: #ffffff;
+    font-size: 0.95rem;
+    color: var(--login-ink);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.login-page input:focus {
+    outline: none;
+    border-color: rgba(14, 116, 144, 0.55);
+    box-shadow: 0 0 0 3px rgba(14, 116, 144, 0.2);
+}
+.login-page .btn-login {
+    width: 100%;
+    padding: 0.85rem;
+    background: linear-gradient(135deg, var(--login-accent), #1d4ed8);
+    color: white;
+    border: none;
+    border-radius: 0.9rem;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 0.75rem;
+    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.18);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+    animation: fadeUp 0.6s ease-out 0.28s both;
+}
+.login-page .btn-login:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 20px 34px rgba(15, 23, 42, 0.22);
+    filter: brightness(1.02);
+}
+.login-page .btn-login:active { transform: translateY(1px); }
+.login-page .default-creds {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid rgba(148, 163, 184, 0.35);
+    font-size: 0.78rem;
+    color: var(--login-muted);
+    text-align: center;
+    animation: fadeUp 0.6s ease-out 0.35s both;
+}
+.login-page .default-creds .alert-info {
+    background: rgba(239, 246, 255, 0.8);
+    border-color: rgba(147, 197, 253, 0.6);
+    color: #1e3a8a;
+}
+@keyframes loginCardIn {
+    from { opacity: 0; transform: translateY(18px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .login-page .login-container,
+    .login-page .login-header,
+    .login-page .form-group,
+    .login-page .btn-login,
+    .login-page .default-creds { animation: none; }
+    .login-page .btn-login:hover { transform: none; }
+}
+label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #374151;
+    margin-bottom: 0.5rem;
+}
+/* Responsive */
+@media (max-width: 640px) {
+    .header-content { flex-direction: column; align-items: stretch; }
+    .btn-group { width: 100%; }
+    .btn { flex: 1; text-align: center; }
+    table { font-size: 0.75rem; }
+    th, td { padding: 0.5rem; }
+}
+</style>
 </head>
 <body>
     <div id="app">
@@ -664,7 +1882,7 @@ if (!isAuthenticated()) {
                     <div class="btn-group">
                         <button @click="showCreateModal('directory')" class="btn btn-blue">+ Folder</button>
                         <button @click="showCreateModal('file')" class="btn btn-green">+ File</button>
-                        <label class="btn btn-purple" style="margin: 0;">⬆ Upload<input type="file" @change="uploadFile" class="hidden" multiple></label>
+                        <label class="btn btn-purple" style="margin: 0;">⬆ Upload<input ref="uploadInput" type="file" @change="uploadFile" class="hidden" multiple></label>
                         <button @click="modals.password = true" class="btn btn-gray">🔑 Password</button>
                         <a href="?action=logout" class="btn btn-red">Logout</a>
                     </div>
@@ -684,12 +1902,42 @@ if (!isAuthenticated()) {
             <div v-if="loading" class="loading"><div class="spinner"></div><p class="loading-text">Loading...</p></div>
             <div v-if="error" class="alert alert-error">{{ error }}</div>
             <div v-if="successMessage" class="alert alert-success">{{ successMessage }}</div>
-            <div v-if="!loading" class="table-container">
+            <div v-if="!loading && items.length" class="bulk-actions">
+                <div class="bulk-left">
+                    <button @click="toggleSelectAll" class="btn btn-gray" :disabled="!selectableItems.length">
+                        {{ allSelected ? 'Deselect All' : 'Select All' }}
+                    </button>
+                    <span v-if="selectedCount" class="bulk-count">{{ selectedCount }} selected</span>
+                </div>
+                <div class="bulk-right">
+                    <button @click="showMoveModal(null, true)" class="btn btn-purple" :disabled="!selectedCount">Move Selected</button>
+                    <button @click="bulkDelete" class="btn btn-red" :disabled="!selectedCount">Delete Selected</button>
+                </div>
+            </div>
+            <div v-if="!loading" class="table-container" @contextmenu.prevent="openContextMenu($event, null)">
                 <table>
-                    <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th>Actions</th></tr></thead>
+                    <thead>
+                        <tr>
+                            <th class="select-col">
+                                <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" :disabled="!selectableItems.length" aria-label="Select all">
+                            </th>
+                            <th>Name</th>
+                            <th>Size</th>
+                            <th>Modified</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        <tr v-for="item in items" :key="item.path">
-                            <td><div class="item-name"><span class="item-icon">{{ item.type === 'directory' ? '📁' : '📄' }}</span><button @click="handleItemClick(item)" class="item-link">{{ item.name }}</button></div></td>
+                        <tr v-for="item in items" :key="item.path" :class="{ 'row-selected': isSelected(item) }" @contextmenu.prevent.stop="openContextMenu($event, item)">
+                            <td class="select-col">
+                                <input type="checkbox" :checked="isSelected(item)" @change="toggleItemSelection(item)" :disabled="item.name === '..'" aria-label="Select item">
+                            </td>
+                            <td>
+                                <div class="item-name">
+                                    <span class="item-icon">{{ item.type === 'directory' ? '📁' : '📄' }}</span>
+                                    <button @click="handleItemClick(item)" class="item-link">{{ item.name }}</button>
+                                </div>
+                            </td>
                             <td>{{ item.type === 'directory' ? '-' : formatSize(item.size) }}</td>
                             <td>{{ formatDate(item.modified) }}</td>
                             <td><div class="actions">
@@ -698,10 +1946,11 @@ if (!isAuthenticated()) {
                                 <button v-if="item.type === 'file'" @click="viewFile(item)" class="action-btn action-green">View</button>
                                 <button v-if="item.name !== '..'" @click="showCompressModal(item)" class="action-btn action-orange">Compress</button>
                                 <button v-if="item.name !== '..'" @click="showRenameModal(item)" class="action-btn action-yellow">Rename</button>
+                                <button v-if="item.name !== '..'" @click="showMoveModal(item)" class="action-btn action-purple">Move</button>
                                 <button v-if="item.name !== '..'" @click="deleteItem(item)" class="action-btn action-red">Delete</button>
                             </div></td>
                         </tr>
-                        <tr v-if="items.length === 0"><td colspan="4" class="empty-state">Empty directory</td></tr>
+                        <tr v-if="items.length === 0"><td colspan="5" class="empty-state">Empty directory</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -746,6 +1995,49 @@ if (!isAuthenticated()) {
             </div>
         </div>
 
+        <div v-if="modals.move" class="modal-overlay" @click.self="closeMoveModal">
+            <div class="modal">
+                <h3 class="modal-title">Move {{ moveTitle }}</h3>
+                <p class="modal-subtitle">Destination folder (relative to root)</p>
+                <input v-model="moveDestination" type="text" class="input" placeholder="e.g. projects/archive">
+                <div class="modal-actions-inline">
+                    <button class="btn btn-gray btn-sm" @click="setMoveDestination('')">Root</button>
+                    <button class="btn btn-gray btn-sm" @click="setMoveDestination(currentPath)">Current</button>
+                    <button class="btn btn-gray btn-sm" @click="browseMoveDestination">Browse Path</button>
+                </div>
+                <div class="move-browser">
+                    <div class="move-browser-header">
+                        <span>Browse folders</span>
+                        <button class="btn btn-gray btn-sm" @click="setMoveDestination(moveBrowserPath)">Use this folder</button>
+                    </div>
+                    <div class="move-breadcrumb">
+                        <button @click="loadMoveDirectory('')">Root</button>
+                        <template v-for="(part, index) in moveBrowserBreadcrumbs" :key="index">
+                            <span class="breadcrumb-sep">/</span>
+                            <button @click="navigateMoveBreadcrumb(index)">{{ part }}</button>
+                        </template>
+                    </div>
+                    <div v-if="moveBrowserLoading" class="move-browser-loading">Loading folders...</div>
+                    <div v-else-if="moveBrowserError" class="alert alert-error">{{ moveBrowserError }}</div>
+                    <div v-else class="move-browser-list">
+                        <div v-for="item in moveBrowserItems" :key="item.path" class="move-browser-item">
+                            <button class="move-browser-link" @click="openMoveFolder(item)">
+                                📁 {{ item.name }}
+                            </button>
+                            <div class="move-browser-actions">
+                                <button class="btn btn-gray btn-sm" @click.stop="setMoveDestination(item.path)" :disabled="item.name === '..'">Select</button>
+                            </div>
+                        </div>
+                        <div v-if="!moveBrowserItems.length" class="move-browser-empty">No folders found.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button @click="closeMoveModal" class="btn btn-gray">Cancel</button>
+                    <button @click="performMove" class="btn btn-blue">Move</button>
+                </div>
+            </div>
+        </div>
+
         <div v-if="modals.password" class="modal-overlay" @click.self="modals.password = false">
             <div class="modal">
                 <h3 class="modal-title">Change Password</h3>
@@ -774,10 +2066,46 @@ if (!isAuthenticated()) {
                 </div>
             </div>
         </div>
+
+        <div v-if="contextMenu.visible" class="context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }" @click.stop>
+            <template v-if="contextMenu.item">
+                <div class="context-title">{{ contextMenu.item.name }}</div>
+                <button v-if="contextMenu.item.type === 'directory'" @click="closeContextMenu(); handleItemClick(contextMenu.item)">Open</button>
+                <button v-if="contextMenu.item.type === 'file'" @click="closeContextMenu(); viewFile(contextMenu.item)">View</button>
+                <button v-if="contextMenu.item.type === 'file'" @click="closeContextMenu(); downloadFile(contextMenu.item)">Download</button>
+                <button v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); showRenameModal(contextMenu.item)">Rename</button>
+                <button v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); showMoveModal(contextMenu.item)">Move</button>
+                <button v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); showCompressModal(contextMenu.item)">Compress</button>
+                <button v-if="contextMenu.item.type === 'file' && isArchive(contextMenu.item.name)" @click="closeContextMenu(); extractItem(contextMenu.item)">Extract</button>
+                <template v-if="selectedCount > 1">
+                    <div class="menu-sep"></div>
+                    <button @click="closeContextMenu(); showMoveModal(null, true)">Move Selected ({{ selectedCount }})</button>
+                    <button class="danger" @click="closeContextMenu(); bulkDelete()">Delete Selected ({{ selectedCount }})</button>
+                </template>
+                <div class="menu-sep"></div>
+                <button class="danger" v-if="contextMenu.item.name !== '..'" @click="closeContextMenu(); deleteItem(contextMenu.item)">Delete</button>
+            </template>
+            <template v-else>
+                <button @click="closeContextMenu(); showCreateModal('directory')">New Folder</button>
+                <button @click="closeContextMenu(); showCreateModal('file')">New File</button>
+                <button @click="closeContextMenu(); triggerUpload()">Upload Files</button>
+                <div class="menu-sep"></div>
+                <button v-if="items.length" @click="closeContextMenu(); toggleSelectAll()">{{ allSelected ? 'Deselect All' : 'Select All' }}</button>
+                <button v-if="selectedCount" @click="closeContextMenu(); showMoveModal(null, true)">Move Selected ({{ selectedCount }})</button>
+                <button v-if="selectedCount" class="danger" @click="closeContextMenu(); bulkDelete()">Delete Selected ({{ selectedCount }})</button>
+                <div class="menu-sep"></div>
+                <button @click="closeContextMenu(); loadDirectory()">Refresh</button>
+            </template>
+        </div>
     </div>
-    <script>
-// Vue 3 Production Build
-/**
+
+    <!-- Footer -->
+    <footer style="text-align: center; padding: 2rem 1rem; color: #6b7280; font-size: 0.875rem;">
+        <p>Single PHP File Manager v<?php echo defined('APP_VERSION') ? APP_VERSION : '1.0.0'; ?></p>
+        <p><a href="https://github.com/Al-Waleed-IT/single-php-file-manager" target="_blank" style="color: #2563eb;">GitHub</a> • <a href="https://github.com/Al-Waleed-IT/single-php-file-manager/issues" target="_blank" style="color: #2563eb;">Report Issue</a></p>
+    </footer>
+
+    <script>/**
 * vue v3.5.27
 * (c) 2018-present Yuxi (Evan) You and Vue contributors
 * @license MIT
@@ -790,18 +2118,19 @@ if (!isAuthenticated()) {
 `,-1)}(function(e,t){if(!e.length)return;t.pure=!0;let{push:n,newline:r}=t;r();for(let i=0;i<e.length;i++){let l=e[i];l&&(n(`const _hoisted_${i+1} = `),o3(l,t),r())}t.pure=!1})(e.hoists,t),r(),n("return ")}(e,n);let h=(c?["_ctx","_push","_parent","_attrs"]:["_ctx","_cache"]).join(", ");if(i(`function ${c?"ssrRender":"render"}(${h}) {`),s(),p&&(i("with (_ctx) {"),s(),d&&(i(`const { ${u.map(o0).join(", ")} } = _Vue
 `,-1),a())),e.components.length&&(o1(e.components,"component",n),(e.directives.length||e.temps>0)&&a()),e.directives.length&&(o1(e.directives,"directive",n),e.temps>0&&a()),e.temps>0){i("let ");for(let t=0;t<e.temps;t++)i(`${t>0?", ":""}_temp${t}`)}return(e.components.length||e.directives.length||e.temps)&&(i(`
 `,0),a()),c||i("return "),e.codegenNode?o3(e.codegenNode,n):i("null"),p&&(o(),i("}")),o(),i("}"),{ast:e,code:n.code,preamble:"",map:n.map?n.map.toJSON():void 0}}(o,s)}(e,T({},aP,t,{nodeTransforms:[aj,...aB,...t.nodeTransforms||[]],directiveTransforms:T({},aU,t.directiveTransforms||{}),transformHoist:null}))}(e,i),s=Function(l)();return s._rc=!0,aH[n]=s}return iO(aq),e.BaseTransition=nb,e.BaseTransitionPropsValidators=ng,e.Comment=r8,e.DeprecationTypes=null,e.EffectScope=eg,e.ErrorCodes={SETUP_FUNCTION:0,0:"SETUP_FUNCTION",RENDER_FUNCTION:1,1:"RENDER_FUNCTION",NATIVE_EVENT_HANDLER:5,5:"NATIVE_EVENT_HANDLER",COMPONENT_EVENT_HANDLER:6,6:"COMPONENT_EVENT_HANDLER",VNODE_HOOK:7,7:"VNODE_HOOK",DIRECTIVE_HOOK:8,8:"DIRECTIVE_HOOK",TRANSITION_HOOK:9,9:"TRANSITION_HOOK",APP_ERROR_HANDLER:10,10:"APP_ERROR_HANDLER",APP_WARN_HANDLER:11,11:"APP_WARN_HANDLER",FUNCTION_REF:12,12:"FUNCTION_REF",ASYNC_COMPONENT_LOADER:13,13:"ASYNC_COMPONENT_LOADER",SCHEDULER:14,14:"SCHEDULER",COMPONENT_UPDATE:15,15:"COMPONENT_UPDATE",APP_UNMOUNT_CLEANUP:16,16:"APP_UNMOUNT_CLEANUP"},e.ErrorTypeStrings=null,e.Fragment=r3,e.KeepAlive={name:"KeepAlive",__isKeepAlive:!0,props:{include:[String,RegExp,Array],exclude:[String,RegExp,Array],max:[String,Number]},setup(e,{slots:t}){let n=iT(),r=n.ctx,i=new Map,l=new Set,s=null,o=n.suspense,{renderer:{p:a,m:c,um:u,o:{createElement:d}}}=r,p=d("div");function h(e){nJ(e),u(e,n,o,!0)}function f(e){i.forEach((t,n)=>{let r=i$(nB(t)?t.type.__asyncResolved||{}:t.type);r&&!e(r)&&m(n)})}function m(e){let t=i.get(e);!t||s&&ia(t,s)?s&&nJ(s):h(t),i.delete(e),l.delete(e)}r.activate=(e,t,n,r,i)=>{let l=e.component;c(e,t,n,0,o),a(l.vnode,e,t,n,l,o,r,e.slotScopeIds,i),rH(()=>{l.isDeactivated=!1,l.a&&z(l.a);let t=e.props&&e.props.onVnodeMounted;t&&iS(t,l.parent,e)},o)},r.deactivate=e=>{let t=e.component;rX(t.m),rX(t.a),c(e,p,null,1,o),rH(()=>{t.da&&z(t.da);let n=e.props&&e.props.onVnodeUnmounted;n&&iS(n,t.parent,e),t.isDeactivated=!0},o)},t7(()=>[e.include,e.exclude],([e,t])=>{e&&f(t=>nq(e,t)),t&&f(e=>!nq(t,e))},{flush:"post",deep:!0});let g=null,y=()=>{null!=g&&(rQ(n.subTree.type)?rH(()=>{i.set(g,nG(n.subTree))},n.subTree.suspense):i.set(g,nG(n.subTree)))};return nY(y),n1(y),n2(()=>{i.forEach(e=>{let{subTree:t,suspense:r}=n,i=nG(t);if(e.type===i.type&&e.key===i.key){nJ(i);let e=i.component.da;e&&rH(e,r);return}h(e)})}),()=>{if(g=null,!t.default)return s=null;let n=t.default(),r=n[0];if(n.length>1)return s=null,n;if(!io(r)||!(4&r.shapeFlag)&&!(128&r.shapeFlag))return s=null,r;let o=nG(r);if(o.type===r8)return s=null,o;let a=o.type,c=i$(nB(o)?o.type.__asyncResolved||{}:a),{include:u,exclude:d,max:p}=e;if(u&&(!c||!nq(u,c))||d&&c&&nq(d,c))return o.shapeFlag&=-257,s=o,r;let h=null==o.key?a:o.key,f=i.get(h);return o.el&&(o=im(o),128&r.shapeFlag&&(r.ssContent=o)),g=h,f?(o.el=f.el,o.component=f.component,o.transition&&nk(o,o.transition),o.shapeFlag|=512,l.delete(h),l.add(h)):(l.add(h),p&&l.size>parseInt(p,10)&&m(l.values().next().value)),o.shapeFlag|=256,s=o,rQ(r.type)?r:o}}},e.ReactiveEffect=ey,e.Static=r5,e.Suspense={name:"Suspense",__isSuspense:!0,process(e,t,n,r,i,l,s,o,a,c){if(null==e)!function(e,t,n,r,i,l,s,o,a){let{p:c,o:{createElement:u}}=a,d=u("div"),p=e.suspense=r0(e,i,r,t,d,n,l,s,o,a);c(null,p.pendingBranch=e.ssContent,d,null,r,p,l,s),p.deps>0?(rY(e,"onPending"),rY(e,"onFallback"),c(null,e.ssFallback,t,n,r,null,l,s),r6(p,e.ssFallback)):p.resolve(!1,!0)}(t,n,r,i,l,s,o,a,c);else{if(l&&l.deps>0&&!e.suspense.isInFallback){t.suspense=e.suspense,t.suspense.vnode=t,t.el=e.el;return}!function(e,t,n,r,i,l,s,o,{p:a,um:c,o:{createElement:u}}){let d=t.suspense=e.suspense;d.vnode=t,t.el=e.el;let p=t.ssContent,h=t.ssFallback,{activeBranch:f,pendingBranch:m,isInFallback:g,isHydrating:y}=d;if(m)d.pendingBranch=p,ia(m,p)?(a(m,p,d.hiddenContainer,null,i,d,l,s,o),d.deps<=0?d.resolve():g&&!y&&(a(f,h,n,r,i,null,l,s,o),r6(d,h))):(d.pendingId=rZ++,y?(d.isHydrating=!1,d.activeBranch=m):c(m,i,d),d.deps=0,d.effects.length=0,d.hiddenContainer=u("div"),g?(a(null,p,d.hiddenContainer,null,i,d,l,s,o),d.deps<=0?d.resolve():(a(f,h,n,r,i,null,l,s,o),r6(d,h))):f&&ia(f,p)?(a(f,p,n,r,i,d,l,s,o),d.resolve(!0)):(a(null,p,d.hiddenContainer,null,i,d,l,s,o),d.deps<=0&&d.resolve()));else if(f&&ia(f,p))a(f,p,n,r,i,d,l,s,o),r6(d,p);else if(rY(t,"onPending"),d.pendingBranch=p,512&p.shapeFlag?d.pendingId=p.component.suspenseId:d.pendingId=rZ++,a(null,p,d.hiddenContainer,null,i,d,l,s,o),d.deps<=0)d.resolve();else{let{timeout:e,pendingId:t}=d;e>0?setTimeout(()=>{d.pendingId===t&&d.fallback(h)},e):0===e&&d.fallback(h)}}(e,t,n,r,i,s,o,a,c)}},hydrate:function(e,t,n,r,i,l,s,o,a){let c=t.suspense=r0(t,r,n,e.parentNode,document.createElement("div"),null,i,l,s,o,!0),u=a(e,c.pendingBranch=t.ssContent,n,c,l,s);return 0===c.deps&&c.resolve(!1,!0),u},normalize:function(e){let{shapeFlag:t,children:n}=e,r=32&t;e.ssContent=r1(r?n.default:n),e.ssFallback=r?r1(n.fallback):ip(r8)}},e.Teleport=na,e.Text=r4,e.TrackOpTypes={GET:"get",HAS:"has",ITERATE:"iterate"},e.Transition=iQ,e.TransitionGroup=lE,e.TriggerOpTypes={SET:"set",ADD:"add",DELETE:"delete",CLEAR:"clear"},e.VueElement=lC,e.assertNumber=function(e,t){},e.callWithAsyncErrorHandling=tF,e.callWithErrorHandling=tD,e.camelize=B,e.capitalize=q,e.cloneVNode=im,e.compatUtils=null,e.compile=aq,e.computed=iD,e.createApp=l0,e.createBlock=is,e.createCommentVNode=function(e="",t=!1){return t?(ie(),is(r8,null,e)):ip(r8,null,e)},e.createElementBlock=function(e,t,n,r,i,l){return il(id(e,t,n,r,i,l,!0))},e.createElementVNode=id,e.createHydrationRenderer=rq,e.createPropsRestProxy=function(e,t){let n={};for(let r in e)t.includes(r)||Object.defineProperty(n,r,{enumerable:!0,get:()=>e[r]});return n},e.createRenderer=function(e){return rW(e)},e.createSSRApp=l1,e.createSlots=function(e,t){for(let n=0;n<t.length;n++){let r=t[n];if(E(r))for(let t=0;t<r.length;t++)e[r[t].name]=r[t].fn;else r&&(e[r.name]=r.key?(...e)=>{let t=r.fn(...e);return t&&(t.key=r.key),t}:r.fn)}return e},e.createStaticVNode=function(e,t){let n=ip(r5,null,e);return n.staticCount=t,n},e.createTextVNode=ig,e.createVNode=ip,e.customRef=tE,e.defineAsyncComponent=function(e){let t;I(e)&&(e={loader:e});let{loader:n,loadingComponent:r,errorComponent:i,delay:l=200,hydrate:s,timeout:o,suspensible:a=!0,onError:c}=e,u=null,d=0,p=()=>{let e;return u||(e=u=n().catch(e=>{if(e=e instanceof Error?e:Error(String(e)),c)return new Promise((t,n)=>{c(e,()=>t((d++,u=null,p())),()=>n(e),d+1)});throw e}).then(n=>e!==u&&u?u:(n&&(n.__esModule||"Module"===n[Symbol.toStringTag])&&(n=n.default),t=n,n)))};return nw({name:"AsyncComponentWrapper",__asyncLoader:p,__asyncHydrate(e,n,r){let i=!1;(n.bu||(n.bu=[])).push(()=>i=!0);let l=()=>{i||r()},o=s?()=>{let t=s(l,t=>(function(e,t){if(nP(e)&&"["===e.data){let n=1,r=e.nextSibling;for(;r;){if(1===r.nodeType){if(!1===t(r))break}else if(nP(r))if("]"===r.data){if(0==--n)break}else"["===r.data&&n++;r=r.nextSibling}}else t(e)})(e,t));t&&(n.bum||(n.bum=[])).push(t)}:l;t?o():p().then(()=>!n.isUnmounted&&o())},get __asyncResolved(){return t},setup(){let e=ik;if(nN(e),t)return()=>nU(t,e);let n=t=>{u=null,tV(t,e,13,!i)};if(a&&e.suspense)return p().then(t=>()=>nU(t,e)).catch(e=>(n(e),()=>i?ip(i,{error:e}):null));let s=tS(!1),c=tS(),d=tS(!!l);return l&&setTimeout(()=>{d.value=!1},l),null!=o&&setTimeout(()=>{if(!s.value&&!c.value){let e=Error(`Async component timed out after ${o}ms.`);n(e),c.value=e}},o),p().then(()=>{s.value=!0,e.parent&&nH(e.parent.vnode)&&e.parent.update()}).catch(e=>{n(e),c.value=e}),()=>s.value&&t?nU(t,e):c.value&&i?ip(i,{error:c.value}):r&&!d.value?nU(r,e):void 0}})},e.defineComponent=nw,e.defineCustomElement=lS,e.defineEmits=function(){return null},e.defineExpose=function(e){},e.defineModel=function(){},e.defineOptions=function(e){},e.defineProps=function(){return null},e.defineSSRCustomElement=(e,t)=>lS(e,t,l1),e.defineSlots=function(){return null},e.devtools=void 0,e.effect=function(e,t){e.effect instanceof ey&&(e=e.effect.fn);let n=new ey(e);t&&T(n,t);try{n.run()}catch(e){throw n.stop(),e}let r=n.run.bind(n);return r.effect=n,r},e.effectScope=function(e){return new eg(e)},e.getCurrentInstance=iT,e.getCurrentScope=function(){return l},e.getCurrentWatcher=function(){return m},e.getTransitionRawChildren=nT,e.guardReactiveProps=ih,e.h=iF,e.handleError=tV,e.hasInjectionContext=function(){return!!(iT()||rS)},e.hydrate=(...e)=>{lZ().hydrate(...e)},e.hydrateOnIdle=(e=1e4)=>t=>{let n=nV(t,{timeout:e});return()=>nj(n)},e.hydrateOnInteraction=(e=[])=>(t,n)=>{O(e)&&(e=[e]);let r=!1,i=e=>{r||(r=!0,l(),t(),e.target.dispatchEvent(new e.constructor(e.type,e)))},l=()=>{n(t=>{for(let n of e)t.removeEventListener(n,i)})};return n(t=>{for(let n of e)t.addEventListener(n,i,{once:!0})}),l},e.hydrateOnMediaQuery=e=>t=>{if(e){let n=matchMedia(e);if(!n.matches)return n.addEventListener("change",t,{once:!0}),()=>n.removeEventListener("change",t);t()}},e.hydrateOnVisible=e=>(t,n)=>{let r=new IntersectionObserver(e=>{for(let n of e)if(n.isIntersecting){r.disconnect(),t();break}},e);return n(e=>{if(e instanceof Element){if(function(e){let{top:t,left:n,bottom:r,right:i}=e.getBoundingClientRect(),{innerHeight:l,innerWidth:s}=window;return(t>0&&t<l||r>0&&r<l)&&(n>0&&n<s||i>0&&i<s)}(e))return t(),r.disconnect(),!1;r.observe(e)}}),()=>r.disconnect()},e.initCustomFormatter=function(){},e.initDirectivesForSSR=S,e.inject=t8,e.isMemoSame=iV,e.isProxy=tm,e.isReactive=tp,e.isReadonly=th,e.isRef=t_,e.isRuntimeOnly=()=>!d,e.isShallow=tf,e.isVNode=io,e.markRaw=tv,e.mergeDefaults=function(e,t){let n=ra(e);for(let e in t){if(e.startsWith("__skip"))continue;let r=n[e];r?E(r)||I(r)?r=n[e]={type:r,default:t[e]}:r.default=t[e]:null===r&&(r=n[e]={default:t[e]}),r&&t[`__skip_${e}`]&&(r.skipFactory=!0)}return n},e.mergeModels=function(e,t){return e&&t?E(e)&&E(t)?e.concat(t):T({},ra(e),ra(t)):e||t},e.mergeProps=i_,e.nextTick=tz,e.nodeOps=iW,e.normalizeClass=ei,e.normalizeProps=function(e){if(!e)return null;let{class:t,style:n}=e;return t&&!O(t)&&(e.class=ei(t)),n&&(e.style=Y(n)),e},e.normalizeStyle=Y,e.onActivated=nW,e.onBeforeMount=nZ,e.onBeforeUnmount=n2,e.onBeforeUpdate=n0,e.onDeactivated=nK,e.onErrorCaptured=n5,e.onMounted=nY,e.onRenderTracked=n8,e.onRenderTriggered=n4,e.onScopeDispose=function(e,t=!1){l&&l.cleanups.push(e)},e.onServerPrefetch=n3,e.onUnmounted=n6,e.onUpdated=n1,e.onWatcherCleanup=tL,e.openBlock=ie,e.patchProp=lb,e.popScopeId=function(){t1=null},e.provide=t4,e.proxyRefs=tN,e.pushScopeId=function(e){t1=e},e.queuePostFlushCb=tX,e.reactive=ta,e.readonly=tu,e.ref=tS,e.registerRuntimeCompiler=iO,e.render=lY,e.renderList=function(e,t,n,r){let i,l=n&&n[r],s=E(e);if(s||O(e)){let n=s&&tp(e),r=!1,o=!1;n&&(r=!tf(e),o=th(e),e=eU(e)),i=Array(e.length);for(let n=0,s=e.length;n<s;n++)i[n]=t(r?o?tb(ty(e[n])):ty(e[n]):e[n],n,void 0,l&&l[n])}else if("number"==typeof e){i=Array(e);for(let n=0;n<e;n++)i[n]=t(n+1,n,void 0,l&&l[n])}else if(M(e))if(e[Symbol.iterator])i=Array.from(e,(e,n)=>t(e,n,void 0,l&&l[n]));else{let n=Object.keys(e);i=Array(n.length);for(let r=0,s=n.length;r<s;r++){let s=n[r];i[r]=t(e[s],s,r,l&&l[r])}}else i=[];return n&&(n[r]=i),i},e.renderSlot=function(e,t,n={},r,i){if(t0.ce||t0.parent&&nB(t0.parent)&&t0.parent.ce){let e=Object.keys(n).length>0;return"default"!==t&&(n.name=t),ie(),is(r3,null,[ip("slot",n,r&&r())],e?-2:64)}let l=e[t];l&&l._c&&(l._d=!1),ie();let s=l&&function e(t){return t.some(t=>!io(t)||t.type!==r8&&(t.type!==r3||!!e(t.children)))?t:null}(l(n)),o=n.key||s&&s.key,a=is(r3,{key:(o&&!R(o)?o:`_${t}`)+(!s&&r?"_fb":"")},s||(r?r():[]),s&&1===e._?64:-2);return!i&&a.scopeId&&(a.slotScopeIds=[a.scopeId+"-s"]),l&&l._c&&(l._d=!0),a},e.resolveComponent=function(e,t){return re(n9,e,!0,t)||e},e.resolveDirective=function(e){return re("directives",e)},e.resolveDynamicComponent=function(e){return O(e)?re(n9,e,!1)||e:e||n7},e.resolveFilter=null,e.resolveTransitionHooks=nS,e.setBlockTracking=ii,e.setDevtoolsHook=S,e.setTransitionHooks=nk,e.shallowReactive=tc,e.shallowReadonly=function(e){return td(e,!0,e8,tr,to)},e.shallowRef=tx,e.ssrContextKey=t5,e.ssrUtils=null,e.stop=function(e){e.effect.stop()},e.toDisplayString=eh,e.toHandlerKey=W,e.toHandlers=function(e,t){let n={};for(let r in e)n[t&&/[A-Z]/.test(r)?`on:${r}`:W(r)]=e[r];return n},e.toRaw=tg,e.toRef=function(e,t,n){if(t_(e))return e;if(I(e))return new tO(e);if(!M(e)||!(arguments.length>1))return tS(e);return new tI(e,t,n)},e.toRefs=function(e){let t=E(e)?Array(e.length):{};for(let n in e)t[n]=new tI(e,n,void 0);return t},e.toValue=function(e){return I(e)?e():tT(e)},e.transformVNodeArgs=function(e){},e.triggerRef=function(e){e.dep&&e.dep.trigger()},e.unref=tT,e.useAttrs=function(){return ro().attrs},e.useCssModule=function(e="$style"){return b},e.useCssVars=function(e){let t=iT();if(!t)return;let n=t.ut=(n=e(t.proxy))=>{Array.from(document.querySelectorAll(`[data-v-owner="${t.uid}"]`)).forEach(e=>li(e,n))},r=()=>{let r=e(t.proxy);t.ce?li(t.ce,r):function e(t,n){if(128&t.shapeFlag){let r=t.suspense;t=r.activeBranch,r.pendingBranch&&!r.isHydrating&&r.effects.push(()=>{e(r.activeBranch,n)})}for(;t.component;)t=t.component.subTree;if(1&t.shapeFlag&&t.el)li(t.el,n);else if(t.type===r3)t.children.forEach(t=>e(t,n));else if(t.type===r5){let{el:e,anchor:r}=t;for(;e&&(li(e,n),e!==r);)e=e.nextSibling}}(t.subTree,r),n(r)};n0(()=>{tX(r)}),nY(()=>{t7(r,S,{flush:"post"});let e=new MutationObserver(r);e.observe(t.subTree.el.parentNode,{childList:!0}),n6(()=>e.disconnect())})},e.useHost=lk,e.useId=function(){let e=iT();return e?(e.appContext.config.idPrefix||"v")+"-"+e.ids[0]+e.ids[1]++:""},e.useModel=function(e,t,n=b){let r=iT(),i=B(t),l=H(t),s=rx(e,i),o=tE((s,o)=>{let a,c,u=b;return t9(()=>{let t=e[i];K(a,t)&&(a=t,o())}),{get:()=>(s(),n.get?n.get(a):a),set(e){let s=n.set?n.set(e):e;if(!K(s,a)&&!(u!==b&&K(e,u)))return;let d=r.vnode.props;d&&(t in d||i in d||l in d)&&(`onUpdate:${t}`in d||`onUpdate:${i}`in d||`onUpdate:${l}`in d)||(a=e,o()),r.emit(`update:${t}`,s),K(e,s)&&K(e,u)&&!K(s,c)&&o(),u=e,c=s}}});return o[Symbol.iterator]=()=>{let e=0;return{next:()=>e<2?{value:e++?s||b:o,done:!1}:{done:!0}}},o},e.useSSRContext=()=>{},e.useShadowRoot=function(){let e=lk();return e&&e.shadowRoot},e.useSlots=function(){return ro().slots},e.useTemplateRef=function(e){let t=iT(),n=tx(null);return t&&Object.defineProperty(t.refs===b?t.refs={}:t.refs,e,{enumerable:!0,get:()=>n.value,set:e=>n.value=e}),n},e.useTransitionState=nf,e.vModelCheckbox=lV,e.vModelDynamic={created(e,t,n){lK(e,t,n,null,"created")},mounted(e,t,n){lK(e,t,n,null,"mounted")},beforeUpdate(e,t,n,r){lK(e,t,n,r,"beforeUpdate")},updated(e,t,n,r){lK(e,t,n,r,"updated")}},e.vModelRadio=lB,e.vModelSelect=lU,e.vModelText=lF,e.vShow={name:"show",beforeMount(e,{value:t},{transition:n}){e[le]="none"===e.style.display?"":e.style.display,n&&t?n.beforeEnter(e):ln(e,t)},mounted(e,{value:t},{transition:n}){n&&t&&n.enter(e)},updated(e,{value:t,oldValue:n},{transition:r}){!t!=!n&&(r?t?(r.beforeEnter(e),ln(e,!0),r.enter(e)):r.leave(e,()=>{ln(e,!1)}):ln(e,t))},beforeUnmount(e,{value:t}){ln(e,t)}},e.version=ij,e.warn=S,e.watch=function(e,t,n){return t7(e,t,n)},e.watchEffect=function(e,t){return t7(e,null,t)},e.watchPostEffect=function(e,t){return t7(e,null,{flush:"post"})},e.watchSyncEffect=t9,e.withAsyncContext=function(e){let t=iT(),n=e();return iN(),P(n)&&(n=n.catch(e=>{throw iw(t),e})),[n,()=>iw(t)]},e.withCtx=t6,e.withDefaults=function(e,t){return null},e.withDirectives=function(e,t){if(null===t0)return e;let n=iL(t0),r=e.dirs||(e.dirs=[]);for(let e=0;e<t.length;e++){let[i,l,s,o=b]=t[e];i&&(I(i)&&(i={mounted:i,updated:i}),i.deep&&t$(l),r.push({dir:i,instance:n,value:l,oldValue:void 0,arg:s,modifiers:o}))}return e},e.withKeys=(e,t)=>{let n=e._withKeys||(e._withKeys={}),r=t.join(".");return n[r]||(n[r]=n=>{if(!("key"in n))return;let r=H(n.key);if(t.some(e=>e===r||lG[e]===r))return e(n)})},e.withMemo=function(e,t,n,r){let i=n[r];if(i&&iV(i,e))return i;let l=t();return l.memo=e.slice(),l.cacheIndex=r,n[r]=l},e.withModifiers=(e,t)=>{let n=e._withMods||(e._withMods={}),r=t.join(".");return n[r]||(n[r]=(n,...r)=>{for(let e=0;e<t.length;e++){let r=lJ[t[e]];if(r&&r(n,t))return}return e(n,...r)})},e.withScopeId=e=>t6,e}({});
-
-// File Manager Application
+</script>
+    <script>// File Manager Application
 const { createApp } = Vue;
 createApp({
     data() {
         return {
             currentPath: '',
             items: [],
+            selectedItems: [],
             loading: false,
             error: null,
             successMessage: null,
-            modals: { create: false, rename: false, view: false, password: false, compress: false },
+            modals: { create: false, rename: false, view: false, password: false, compress: false, move: false },
             createType: 'directory',
             createName: '',
             renameItem: null,
@@ -810,16 +2139,57 @@ createApp({
             fileContent: '',
             compressItem: null,
             selectedFormat: 'zip',
-            passwordData: { current: '', new: '', confirm: '' }
+            passwordData: { current: '', new: '', confirm: '' },
+            moveDestination: '',
+            moveItems: [],
+            moveBrowserPath: '',
+            moveBrowserItems: [],
+            moveBrowserLoading: false,
+            moveBrowserError: null,
+            contextMenu: { visible: false, x: 0, y: 0, item: null }
         };
     },
     computed: {
         breadcrumbs() {
             return this.currentPath ? this.currentPath.split('/').filter(p => p) : [];
+        },
+        selectableItems() {
+            return this.items.filter(item => item.name !== '..');
+        },
+        selectedItemsData() {
+            return this.items.filter(item => this.selectedItems.includes(item.path));
+        },
+        selectedCount() {
+            return this.selectedItems.length;
+        },
+        allSelected() {
+            return this.selectableItems.length > 0 &&
+                this.selectableItems.every(item => this.selectedItems.includes(item.path));
+        },
+        moveBrowserBreadcrumbs() {
+            return this.moveBrowserPath ? this.moveBrowserPath.split('/').filter(p => p) : [];
+        },
+        moveTitle() {
+            if (!this.moveItems.length) return '';
+            if (this.moveItems.length === 1) {
+                const item = this.items.find(entry => entry.path === this.moveItems[0]);
+                return item ? item.name : this.moveItems[0];
+            }
+            return this.moveItems.length + ' items';
         }
     },
     mounted() {
         this.loadDirectory();
+        window.addEventListener('keydown', this.handleKeydown);
+        window.addEventListener('click', this.closeContextMenu);
+        window.addEventListener('scroll', this.closeContextMenu, true);
+        window.addEventListener('resize', this.closeContextMenu);
+    },
+    beforeUnmount() {
+        window.removeEventListener('keydown', this.handleKeydown);
+        window.removeEventListener('click', this.closeContextMenu);
+        window.removeEventListener('scroll', this.closeContextMenu, true);
+        window.removeEventListener('resize', this.closeContextMenu);
     },
     methods: {
         async loadDirectory() {
@@ -835,6 +2205,7 @@ createApp({
                         if (a.type === b.type) return a.name.localeCompare(b.name);
                         return a.type === 'directory' ? -1 : 1;
                     });
+                    this.selectedItems = [];
                 } else {
                     this.error = data.error;
                 }
@@ -850,6 +2221,183 @@ createApp({
         },
         navigateToBreadcrumb(index) {
             this.navigateTo(this.breadcrumbs.slice(0, index + 1).join('/'));
+        },
+        isSelected(item) {
+            return this.selectedItems.includes(item.path);
+        },
+        toggleItemSelection(item) {
+            if (item.name === '..') return;
+            const index = this.selectedItems.indexOf(item.path);
+            if (index >= 0) {
+                this.selectedItems.splice(index, 1);
+            } else {
+                this.selectedItems.push(item.path);
+            }
+        },
+        toggleSelectAll() {
+            if (this.allSelected) {
+                this.selectedItems = [];
+            } else {
+                this.selectedItems = this.selectableItems.map(item => item.path);
+            }
+        },
+        async loadMoveDirectory(path) {
+            this.moveBrowserLoading = true;
+            this.moveBrowserError = null;
+            try {
+                const formData = new FormData();
+                formData.append('path', path || '');
+                const response = await fetch('?action=list', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (data.success) {
+                    const directories = data.items.filter(item => item.type === 'directory' && item.name !== '.users.json');
+                    const sorted = directories.sort((a, b) => {
+                        if (a.name === '..') return -1;
+                        if (b.name === '..') return 1;
+                        return a.name.localeCompare(b.name);
+                    });
+                    this.moveBrowserItems = sorted;
+                    this.moveBrowserPath = data.current || path || '';
+                } else {
+                    this.moveBrowserError = data.error;
+                }
+            } catch (err) {
+                this.moveBrowserError = 'Failed to load folders: ' + err.message;
+            } finally {
+                this.moveBrowserLoading = false;
+            }
+        },
+        navigateMoveBreadcrumb(index) {
+            const path = this.moveBrowserBreadcrumbs.slice(0, index + 1).join('/');
+            this.loadMoveDirectory(path);
+        },
+        openMoveFolder(item) {
+            if (item.name === '..') {
+                const parts = this.moveBrowserPath.split('/').filter(p => p);
+                parts.pop();
+                this.loadMoveDirectory(parts.join('/'));
+                return;
+            }
+            this.loadMoveDirectory(item.path);
+            this.setMoveDestination(item.path);
+        },
+        browseMoveDestination() {
+            this.loadMoveDirectory(this.moveDestination || '');
+        },
+        setMoveDestination(path) {
+            this.moveDestination = path || '';
+        },
+        showMoveModal(item, useSelection) {
+            if (useSelection && this.selectedItems.length) {
+                this.moveItems = [...this.selectedItems];
+            } else if (item) {
+                if (item.name === '..') return;
+                this.moveItems = [item.path];
+                if (!this.isSelected(item)) {
+                    this.selectedItems = [item.path];
+                }
+            } else if (this.selectedItems.length) {
+                this.moveItems = [...this.selectedItems];
+            } else {
+                return;
+            }
+            this.moveDestination = this.currentPath || '';
+            this.loadMoveDirectory(this.currentPath || '');
+            this.modals.move = true;
+        },
+        closeMoveModal() {
+            this.modals.move = false;
+            this.moveItems = [];
+            this.moveDestination = '';
+            this.moveBrowserPath = '';
+            this.moveBrowserItems = [];
+        },
+        async performMove() {
+            if (!this.moveItems.length) return;
+            try {
+                const formData = new FormData();
+                this.moveItems.forEach(path => formData.append('paths[]', path));
+                formData.append('destination', this.moveDestination || '');
+                const response = await fetch('?action=move', { method: 'POST', body: formData });
+                const data = await response.json();
+                if (data.success) {
+                    this.showSuccess(data.message);
+                    this.closeMoveModal();
+                    this.selectedItems = [];
+                    this.loadDirectory();
+                } else {
+                    this.error = data.error;
+                }
+            } catch (err) {
+                this.error = 'Move failed: ' + err.message;
+            }
+        },
+        async bulkDelete() {
+            if (!this.selectedItems.length) return;
+            const count = this.selectedItems.length;
+            if (!confirm(`Delete ${count} selected item${count > 1 ? 's' : ''}?`)) return;
+            this.error = null;
+            let deleted = 0;
+            const errors = [];
+            const paths = [...this.selectedItems];
+            for (const path of paths) {
+                try {
+                    const formData = new FormData();
+                    formData.append('path', path);
+                    const response = await fetch('?action=delete', { method: 'POST', body: formData });
+                    const data = await response.json();
+                    if (data.success) {
+                        deleted += 1;
+                    } else {
+                        errors.push(data.error || 'Delete failed');
+                    }
+                } catch (err) {
+                    errors.push('Delete failed: ' + err.message);
+                }
+            }
+            this.selectedItems = [];
+            await this.loadDirectory();
+            if (deleted) {
+                this.showSuccess(`Deleted ${deleted} item${deleted > 1 ? 's' : ''}`);
+            }
+            if (errors.length) {
+                this.error = errors[0] + (errors.length > 1 ? ` (+${errors.length - 1} more)` : '');
+            }
+        },
+        handleKeydown(event) {
+            if (event.key === 'Escape') {
+                this.closeContextMenu();
+            }
+            if (!(event.ctrlKey || event.metaKey) || event.shiftKey) return;
+            if (event.key.toLowerCase() !== 'a') return;
+            const target = event.target;
+            const tag = target && target.tagName ? target.tagName.toUpperCase() : '';
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || (target && target.isContentEditable)) return;
+            event.preventDefault();
+            this.toggleSelectAll();
+        },
+        openContextMenu(event, item) {
+            if (item && item.name !== '..' && !this.isSelected(item)) {
+                this.selectedItems = [item.path];
+            }
+            const menuWidth = 240;
+            const menuHeight = item ? 310 : 220;
+            const maxX = window.innerWidth - menuWidth - 12;
+            const maxY = window.innerHeight - menuHeight - 12;
+            const x = Math.max(12, Math.min(event.clientX, maxX));
+            const y = Math.max(12, Math.min(event.clientY, maxY));
+            this.contextMenu = { visible: true, x, y, item: item || null };
+        },
+        closeContextMenu() {
+            if (this.contextMenu.visible) {
+                this.contextMenu.visible = false;
+                this.contextMenu.item = null;
+            }
+        },
+        triggerUpload() {
+            if (this.$refs.uploadInput) {
+                this.$refs.uploadInput.click();
+            }
         },
         handleItemClick(item) {
             if (item.type === 'directory') {
@@ -1030,7 +2578,7 @@ createApp({
         },
         isArchive(filename) {
             const ext = filename.split('.').pop().toLowerCase();
-            return ['zip', 'tar', 'gz', 'bz2', 'xz'].includes(ext) || filename.match(/\\.tar\\.(gz|bz2|xz)$/i);
+            return ['zip', 'tar', 'gz', 'bz2', 'xz'].includes(ext) || filename.match(/\.tar\.(gz|bz2|xz)$/i);
         },
         async changePassword() {
             if (!this.passwordData.current || !this.passwordData.new || !this.passwordData.confirm) {
@@ -1086,6 +2634,7 @@ createApp({
         }
     }
 }).mount('#app');
-    </script>
+</script>
 </body>
 </html>
+
