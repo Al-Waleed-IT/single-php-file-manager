@@ -13,7 +13,10 @@ A powerful, modular PHP file manager that builds into a single 209KB file. Featu
 - 📦 **Single File Distribution** - One PHP file, no dependencies
 - 🔐 **Secure Authentication** - BCrypt password hashing (12 rounds)
 - 📂 **Complete File Management** - Create, rename, delete, upload, download, edit
-- 🗜️ **Archive Support** - Create and extract ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ
+- 🗜️ **Archive Support** - Create ZIP, TAR, TAR.GZ, TAR.BZ2 + extract ZIP, TAR, GZ, BZ2, XZ
+- 🧭 **Move Browser** - Pick destinations with a built-in folder picker
+- ✅ **Bulk Actions** - Select multiple items and move/delete in one action
+- 🔑 **Password Manager** - Change credentials from the UI
 - 🎨 **Modern UI** - Vue 3 reactive interface with responsive design
 - 🚀 **Fast** - Lightweight and optimized for performance
 - 🔧 **PHP 5.6+ Compatible** - Works on legacy and modern PHP versions
@@ -78,8 +81,11 @@ The built file will be in `dist/filemanager.php`
 ### File Manager Interface
 ![File Manager](screenshots/file-manager-interface.png)
 
-### Archive Operations
-![Archives](screenshots/archive-operations.png)
+### Move Files/Folders
+![Move Files/Folders](screenshots/move-files-folders.png)
+
+### Compress Files/Folders
+![Compress Files/Folders](screenshots/compress-files-folders.png)
 
 ## 🏗️ Project Structure
 
@@ -157,9 +163,11 @@ define('BCRYPT_COST', 12);                       // BCrypt rounds
 - ✅ Download files
 - ✅ Create files and folders
 - ✅ Rename items
+- ✅ Move files and folders (single or bulk)
 - ✅ Delete files and directories
 - ✅ View and edit text files (up to 1MB)
 - ✅ Breadcrumb navigation
+- ✅ Multi-select with bulk actions
 
 ### Archive Operations
 - ✅ Compress files/folders to multiple formats
@@ -170,6 +178,8 @@ define('BCRYPT_COST', 12);                       // BCrypt rounds
 ### User Interface
 - ✅ Responsive design (mobile-friendly)
 - ✅ Modal dialogs for operations
+- ✅ Folder picker for move destination
+- ✅ Change password modal
 - ✅ Real-time notifications
 - ✅ Loading states
 - ✅ Keyboard shortcuts (Enter to submit)

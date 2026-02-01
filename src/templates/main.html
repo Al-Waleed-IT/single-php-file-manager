@@ -38,6 +38,28 @@
             <div v-if="loading" class="loading"><div class="spinner"></div><p class="loading-text">Loading...</p></div>
             <div v-if="error" class="alert alert-error">{{ error }}</div>
             <div v-if="successMessage" class="alert alert-success">{{ successMessage }}</div>
+            <div v-if="actionQueue.length" class="action-panel">
+                <div class="action-panel-header">
+                    <span>Activity</span>
+                    <button class="action-panel-clear" @click="clearActions">Clear</button>
+                </div>
+                <div v-for="action in actionQueue" :key="action.id" class="action-item">
+                    <div class="action-row">
+                        <div class="action-label">
+                            <span class="action-status" :class="'status-' + action.status"></span>
+                            <span class="action-text">{{ action.label }}</span>
+                        </div>
+                        <div class="action-meta">
+                            <span v-if="action.message">{{ action.message }}</span>
+                            <span v-else-if="action.total !== null">{{ action.current }}/{{ action.total }}</span>
+                            <span v-else-if="action.progress !== null">{{ action.progress }}%</span>
+                        </div>
+                    </div>
+                    <div class="action-bar">
+                        <div class="action-bar-fill" :class="{ indeterminate: action.progress === null }" :style="action.progress === null ? {} : { width: action.progress + '%' }"></div>
+                    </div>
+                </div>
+            </div>
             <div v-if="!loading && items.length" class="bulk-actions">
                 <div class="bulk-left">
                     <button @click="toggleSelectAll" class="btn btn-gray" :disabled="!selectableItems.length">

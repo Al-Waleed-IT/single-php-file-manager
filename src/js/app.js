@@ -25,7 +25,9 @@ createApp({
             moveBrowserItems: [],
             moveBrowserLoading: false,
             moveBrowserError: null,
-            contextMenu: { visible: false, x: 0, y: 0, item: null }
+            contextMenu: { visible: false, x: 0, y: 0, item: null },
+            actionQueue: [],
+            nextActionId: 1
         };
     },
     computed: {
@@ -193,22 +195,44 @@ createApp({
         },
         async performMove() {
             if (!this.moveItems.length) return;
+            const paths = [...this.moveItems];
+            const destination = this.moveDestination || '';
+            const action = this.startAction(`Moving ${paths.length} item${paths.length > 1 ? 's' : ''}`, { total: paths.length });
             try {
-                const formData = new FormData();
-                this.moveItems.forEach(path => formData.append('paths[]', path));
-                formData.append('destination', this.moveDestination || '');
-                const response = await fetch('?action=move', { method: 'POST', body: formData });
-                const data = await response.json();
-                if (data.success) {
-                    this.showSuccess(data.message);
-                    this.closeMoveModal();
-                    this.selectedItems = [];
-                    this.loadDirectory();
+                let moved = 0;
+                const errors = [];
+                for (let i = 0; i < paths.length; i++) {
+                    const formData = new FormData();
+                    formData.append('paths[]', paths[i]);
+                    formData.append('destination', destination);
+                    try {
+                        const response = await fetch('?action=move', { method: 'POST', body: formData });
+                        const data = await response.json();
+                        if (data.success) {
+                            moved += 1;
+                        } else {
+                            errors.push(data.error || 'Move failed');
+                        }
+                    } catch (err) {
+                        errors.push('Move failed: ' + err.message);
+                    }
+                    this.setActionCurrent(action, i + 1, paths.length);
+                }
+                this.closeMoveModal();
+                this.selectedItems = [];
+                await this.loadDirectory();
+                if (moved) {
+                    this.showSuccess(`Moved ${moved} item${moved > 1 ? 's' : ''}`);
+                }
+                if (errors.length) {
+                    this.error = errors[0] + (errors.length > 1 ? ` (+${errors.length - 1} more)` : '');
+                    this.finishAction(action, 'error', errors[0]);
                 } else {
-                    this.error = data.error;
+                    this.finishAction(action, 'success', `${moved}/${paths.length}`);
                 }
             } catch (err) {
                 this.error = 'Move failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         async bulkDelete() {
@@ -219,6 +243,7 @@ createApp({
             let deleted = 0;
             const errors = [];
             const paths = [...this.selectedItems];
+            const action = this.startAction(`Deleting ${count} item${count > 1 ? 's' : ''}`, { total: count });
             for (const path of paths) {
                 try {
                     const formData = new FormData();
@@ -233,6 +258,7 @@ createApp({
                 } catch (err) {
                     errors.push('Delete failed: ' + err.message);
                 }
+                this.setActionCurrent(action, deleted + errors.length, count);
             }
             this.selectedItems = [];
             await this.loadDirectory();
@@ -241,6 +267,9 @@ createApp({
             }
             if (errors.length) {
                 this.error = errors[0] + (errors.length > 1 ? ` (+${errors.length - 1} more)` : '');
+                this.finishAction(action, 'error', errors[0]);
+            } else {
+                this.finishAction(action, 'success', `${deleted}/${count}`);
             }
         },
         handleKeydown(event) {
@@ -298,6 +327,7 @@ createApp({
         },
         async createItem() {
             if (!this.createName.trim()) return;
+            const action = this.startAction(`Creating ${this.createType === 'directory' ? 'folder' : 'file'}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('path', this.currentPath);
@@ -309,11 +339,14 @@ createApp({
                     this.showSuccess(data.message);
                     this.modals.create = false;
                     this.loadDirectory();
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         showRenameModal(item) {
@@ -323,6 +356,7 @@ createApp({
         },
         async renameItem() {
             if (!this.renameNewName.trim() || !this.renameItem) return;
+            const action = this.startAction(`Renaming ${this.renameItem.name}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('oldPath', this.renameItem.path);
@@ -333,15 +367,19 @@ createApp({
                     this.showSuccess(data.message);
                     this.modals.rename = false;
                     this.loadDirectory();
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         async deleteItem(item) {
             if (!confirm('Delete "' + item.name + '"?')) return;
+            const action = this.startAction(`Deleting ${item.name}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('path', item.path);
@@ -350,36 +388,69 @@ createApp({
                 if (data.success) {
                     this.showSuccess(data.message);
                     this.loadDirectory();
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         async uploadFile(event) {
-            const files = event.target.files;
+            const files = Array.from(event.target.files || []);
             if (!files.length) return;
-            for (let i = 0; i < files.length; i++) {
-                try {
-                    const formData = new FormData();
-                    formData.append('path', this.currentPath);
-                    formData.append('file', files[i]);
-                    const response = await fetch('?action=upload', { method: 'POST', body: formData });
-                    const data = await response.json();
-                    if (data.success) {
-                        this.showSuccess('Uploaded: ' + files[i].name);
-                    } else {
-                        this.error = data.error;
-                    }
-                } catch (err) {
-                    this.error = 'Upload failed: ' + err.message;
-                }
+            for (const file of files) {
+                await this.uploadSingleFile(file);
             }
-            this.loadDirectory();
+            await this.loadDirectory();
             event.target.value = '';
         },
+        uploadSingleFile(file) {
+            return new Promise(resolve => {
+                const action = this.startAction(`Uploading ${file.name}`, { progress: 0 });
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', '?action=upload');
+                xhr.responseType = 'json';
+
+                xhr.upload.onprogress = event => {
+                    if (event.lengthComputable) {
+                        const percent = Math.round((event.loaded / event.total) * 100);
+                        this.setActionProgress(action, percent, `${this.formatSize(event.loaded)} / ${this.formatSize(event.total)}`);
+                    } else {
+                        this.setActionProgress(action, null, 'Uploading...');
+                    }
+                };
+
+                xhr.onload = () => {
+                    const response = xhr.response || this.safeJson(xhr.responseText);
+                    if (xhr.status >= 200 && xhr.status < 300 && response && response.success) {
+                        this.showSuccess('Uploaded: ' + file.name);
+                        this.finishAction(action, 'success', 'Uploaded');
+                    } else {
+                        const message = (response && response.error) ? response.error : `Upload failed (${xhr.status})`;
+                        this.error = message;
+                        this.finishAction(action, 'error', message);
+                    }
+                    resolve();
+                };
+
+                xhr.onerror = () => {
+                    const message = 'Upload failed: Network error';
+                    this.error = message;
+                    this.finishAction(action, 'error', message);
+                    resolve();
+                };
+
+                const formData = new FormData();
+                formData.append('path', this.currentPath);
+                formData.append('file', file);
+                xhr.send(formData);
+            });
+        },
         async viewFile(item) {
+            const action = this.startAction(`Opening ${item.name}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('path', item.path);
@@ -389,15 +460,19 @@ createApp({
                     this.viewingFile = item;
                     this.fileContent = data.content;
                     this.modals.view = true;
+                    this.finishAction(action, 'success', 'Opened');
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         async saveFile() {
             if (!this.viewingFile) return;
+            const action = this.startAction(`Saving ${this.viewingFile.name}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('path', this.viewingFile.path);
@@ -408,11 +483,14 @@ createApp({
                     this.showSuccess(data.message);
                     this.closeViewModal();
                     this.loadDirectory();
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         showCompressModal(item) {
@@ -421,6 +499,7 @@ createApp({
             this.modals.compress = true;
         },
         async compress(item, format) {
+            const action = this.startAction(`Compressing ${item.name}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('path', item.path);
@@ -431,15 +510,19 @@ createApp({
                     this.showSuccess(data.message);
                     this.modals.compress = false;
                     this.loadDirectory();
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Compress failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         async extractItem(item) {
             if (!confirm('Extract "' + item.name + '"?')) return;
+            const action = this.startAction(`Extracting ${item.name}`, { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('path', item.path);
@@ -448,11 +531,14 @@ createApp({
                 if (data.success) {
                     this.showSuccess(data.message);
                     this.loadDirectory();
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Extract failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         isArchive(filename) {
@@ -472,6 +558,7 @@ createApp({
                 this.error = 'Min 6 characters';
                 return;
             }
+            const action = this.startAction('Updating password', { progress: 0 });
             try {
                 const formData = new FormData();
                 formData.append('currentPassword', this.passwordData.current);
@@ -482,11 +569,14 @@ createApp({
                     this.showSuccess(data.message);
                     this.modals.password = false;
                     this.passwordData = { current: '', new: '', confirm: '' };
+                    this.finishAction(action, 'success', data.message);
                 } else {
                     this.error = data.error;
+                    this.finishAction(action, 'error', data.error);
                 }
             } catch (err) {
                 this.error = 'Failed: ' + err.message;
+                this.finishAction(action, 'error', err.message);
             }
         },
         closeViewModal() {
@@ -510,6 +600,79 @@ createApp({
         showSuccess(message) {
             this.successMessage = message;
             setTimeout(() => { this.successMessage = null; }, 3000);
+        },
+        clearActions() {
+            this.actionQueue = [];
+        },
+        startAction(label, options = {}) {
+            const action = {
+                id: this.nextActionId++,
+                label,
+                status: 'running',
+                progress: typeof options.progress === 'number' ? options.progress : (options.indeterminate ? null : 0),
+                message: options.message || '',
+                current: typeof options.current === 'number' ? options.current : 0,
+                total: typeof options.total === 'number' ? options.total : null
+            };
+            if (action.total !== null) {
+                const percent = action.total ? Math.round((action.current / action.total) * 100) : 0;
+                action.progress = typeof action.progress === 'number' ? action.progress : percent;
+            }
+            this.actionQueue.unshift(action);
+            this.trimActionQueue();
+            return action;
+        },
+        setActionProgress(action, progress, message) {
+            if (!action) return;
+            if (progress === null) {
+                action.progress = null;
+            } else {
+                action.progress = Math.max(0, Math.min(100, Math.round(progress)));
+            }
+            if (message !== undefined) {
+                action.message = message;
+            }
+        },
+        setActionCurrent(action, current, total, message) {
+            if (!action) return;
+            action.current = current;
+            action.total = total;
+            if (total) {
+                action.progress = Math.round((current / total) * 100);
+                action.message = message !== undefined ? message : `${current}/${total}`;
+            }
+        },
+        finishAction(action, status = 'success', message = '') {
+            if (!action) return;
+            action.status = status;
+            if (action.progress !== null) {
+                action.progress = 100;
+            }
+            if (message) {
+                action.message = message;
+            }
+            const delay = status === 'error' ? 7000 : 3000;
+            setTimeout(() => this.removeAction(action.id), delay);
+        },
+        removeAction(id) {
+            const index = this.actionQueue.findIndex(item => item.id === id);
+            if (index >= 0) {
+                this.actionQueue.splice(index, 1);
+            }
+        },
+        trimActionQueue() {
+            const maxItems = 6;
+            if (this.actionQueue.length > maxItems) {
+                this.actionQueue.splice(maxItems);
+            }
+        },
+        safeJson(text) {
+            if (!text) return null;
+            try {
+                return JSON.parse(text);
+            } catch (err) {
+                return null;
+            }
         }
     }
 }).mount('#app');
