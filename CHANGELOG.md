@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v1.2026.0201.7] - 2026-02-01
+
+- Update README screenshots and features (bde67d3)
+- docs: Update CHANGELOG for v1.2026.0123.5 [skip ci] (d610cc3)
+
+
+All notable changes to this project will be documented in this file.
+
 ## [v1.2026.0123.5] - 2026-01-23
 
 - Add bulk actions, move browse, and context menu (49af5c5)
